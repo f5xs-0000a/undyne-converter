@@ -1,27 +1,3 @@
-CREATE TABLE group_hashes (
-    hash
-        TEXT
-        PRIMARY KEY
-        NOT NULL,
-
-    file_size
-        INTEGER
-        NOT NULL
-);
-CREATE INDEX group_hashes_hash_index ON group_hashes (hash);
-
-CREATE TABLE files (
-    hash
-        TEXT
-        NOT NULL,
-    ordering
-        INTEGER
-        DEFAULT (0),
-    file_path
-        TEXT
-        NOT NULL
-        UNIQUE,
-
-    UNIQUE (hash, ordering)
-) STRICT;
-CREATE INDEX files_hash_index ON files (hash)
+version https://git-lfs.github.com/spec/v1
+oid sha256:26fed90a4049298ab33b891ba7a9bdab9a98c37ad965ea0f70b91155ee1cda49
+size 457
