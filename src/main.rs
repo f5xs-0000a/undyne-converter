@@ -1,6 +1,6 @@
-#[cfg(not(target_os = "linux"))]
-compile_error!("This program can only be compiled for Linux");
-
+// this trait import automatically assumes that it will work for Unix-based
+// operating systems and not Windows
+use std::os::unix::process::CommandExt as _;
 use nix::unistd::Uid;
 use std::process::Command;
 use nix::unistd::geteuid;
@@ -43,9 +43,7 @@ fn get_calling_uid() -> Uid {
 
 // this is done
 fn spawn_and_pause() {
-    dbg!(get_calling_uid());
-
-    return;
+    let cur_uid = get_calling_uid();
 
     let dump_dir = "test_dir/";
 
@@ -57,6 +55,7 @@ fn spawn_and_pause() {
 
     let python_spawned = Command::new("python")
         .arg("src/lel.py")
+        .uid(cur_uid.into())
         .spawn()
         .unwrap();
 
