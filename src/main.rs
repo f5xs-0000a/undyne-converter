@@ -41,7 +41,6 @@ fn get_calling_uid() -> Uid {
     }
 }
 
-// this is done
 fn spawn_and_pause() {
     let cur_uid = get_calling_uid();
 
@@ -53,13 +52,21 @@ fn spawn_and_pause() {
     eprintln!("Creating the directory again...");
     std::fs::create_dir(dump_dir).unwrap();
 
-    let python_spawned = Command::new("python")
-        .arg("src/lel.py")
+    let spawned = Command::new("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-i")
+        .arg("src/test_files/Coffee Run.webm")
+        .arg("-vn")
+        .arg("-filter:a")
+        .arg("loudnorm=print_format=json")
+        .arg("-f")
+        .arg("null")
+        .arg("/dev/null")
         .uid(cur_uid.into())
         .spawn()
         .unwrap();
 
-    eprintln!("ID is {}", python_spawned.id());
+    eprintln!("ID is {}", spawned.id());
 
     std::thread::sleep(std::time::Duration::new(5, 0));
 
@@ -69,7 +76,7 @@ fn spawn_and_pause() {
     let status = Command::new("criu")
         .arg("dump")
         .arg("--tree")
-        .arg(&format!("{}", python_spawned.id()))
+        .arg(&format!("{}", spawned.id()))
         .arg("--images-dir")
         .arg(dump_dir)
         .arg("--shell-job")
@@ -84,7 +91,7 @@ fn spawn_and_pause() {
 
     eprintln!("Job paused!");
 
-    let pid = nix::unistd::Pid::from_raw(python_spawned.id() as i32);
+    let pid = nix::unistd::Pid::from_raw(spawned.id() as i32);
 
     nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGCONT);
 
