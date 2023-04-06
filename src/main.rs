@@ -36,6 +36,7 @@ const TARGET_DUMP_DIRECTORY: &str = "./target_dump/";
 fn main() {
     if !geteuid().is_root() {
         eprintln!("User is not root. Have you tried running using sudo?");
+        return;
     }
 
     {
