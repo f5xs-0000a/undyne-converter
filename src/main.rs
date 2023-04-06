@@ -25,6 +25,8 @@ use rand::{
     Rng as _,
 };
 
+const TARGET_DUMP_DIRECTORY: &str = "./target_dump/";
+
 fn main() {
     if !geteuid().is_root() {
         eprintln!(
@@ -96,7 +98,7 @@ impl ConversionJob {
 
     /// Dump the state of the program into a file
     pub fn dump(&self) {
-        let target_folder = PathBuf::from("./target_dump");
+        let target_folder = PathBuf::from(TARGET_DUMP_DIRECTORY);
 
         // create the temporary folder
         let temp_path = format!("./temp-{}/", generate_random_string());
@@ -143,7 +145,7 @@ impl ConversionJob {
     }
 
     pub fn restore(dump_path: &Path) -> ConversionJob {
-        let target_folder = PathBuf::from("./target_dump");
+        let target_folder = PathBuf::from(TARGET_DUMP_DIRECTORY);
         // create the file at which to write the PID into
         // TODO: see the todo in dump()
         let pid_filename = PathBuf::from("./pidfile.txt");
