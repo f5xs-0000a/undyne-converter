@@ -1,11 +1,16 @@
-// this trait import automatically assumes that it will work for Unix-based
-// operating systems and not Windows
+use core::hash::Hasher;
+use std::io::{
+    Read as _,
+    Seek as _,
+};
 use std::{
     fs::OpenOptions,
     io::{
         BufRead as _,
         BufReader,
     },
+    // this trait import automatically assumes that it will work for Unix-based
+    // operating systems and not Windows
     os::unix::process::CommandExt as _,
     path::{
         Path,
@@ -24,17 +29,15 @@ use rand::{
     rngs::OsRng,
     Rng as _,
 };
+use rustc_hash::FxHasher;
 
 const TARGET_DUMP_DIRECTORY: &str = "./target_dump/";
 
 fn main() {
     if !geteuid().is_root() {
-        eprintln!(
-            "Application is not root. Have you tried running using sudo?"
-        );
+        eprintln!("User is not root. Have you tried running using sudo?");
     }
 
-    /*
     {
         let converter = ConversionJob::new(
             PathBuf::from("./src/test_files/Coffee Run.webm"),
@@ -43,13 +46,14 @@ fn main() {
 
         converter.dump();
     }
-    */
 
+    /*
     {
         let converter = ConversionJob::restore(&PathBuf::from("./target_dump"));
 
         converter.dump();
     }
+    */
 }
 
 fn get_sudo_invoker() -> Uid {
@@ -68,8 +72,6 @@ pub struct ConversionJob {
     //path: PathBuf,
     pid: Pid,
 }
-
-// NOTE: we're just doing a read job. we're still not doing a conversion job.
 
 impl ConversionJob {
     pub fn new(
@@ -146,6 +148,7 @@ impl ConversionJob {
 
     pub fn restore(dump_path: &Path) -> ConversionJob {
         let target_folder = PathBuf::from(TARGET_DUMP_DIRECTORY);
+
         // create the file at which to write the PID into
         // TODO: see the todo in dump()
         let pid_filename = PathBuf::from("./pidfile.txt");
@@ -182,4 +185,67 @@ fn generate_random_string() -> String {
         .map(|u| u as char)
         .take(16)
         .collect::<String>()
+}
+
+/// Reads a file to get its hash.
+///
+/// The file is not read in its entirety to save computation time and I/O time.
+/// Instead, the file is read this way:
+/// ```
+/// hasher(head(file, 65536))
+/// hasher(tail(file, 65536))*
+/// hasher(size(file))
+/// ```
+///
+/// If the file's length is less than 65536 * 2, tail will not read the
+/// overlapping bytes.
+fn read_file_get_hash(
+    path: &(impl AsRef<Path> + ?Sized)
+) -> std::io::Result<u64> {
+    use std::io::SeekFrom::{
+        End,
+        Start,
+    };
+
+    // get the file size
+    let filesize = std::fs::metadata(path)?.len();
+
+    // open the file for reading
+    let mut file = OpenOptions::new().read(true).open(path)?;
+
+    // NOTE: If in case of security concerns, feel free to replace the hash
+    // function by something much more sensible.
+    let mut hasher = FxHasher::default();
+
+    // hash the first 65536 bytes
+    {
+        let mut buffer = vec![0u8; 65536];
+        let bytes_read = file.read(&mut buffer)?;
+
+        buffer.truncate(bytes_read);
+
+        hasher.write(&buffer);
+    }
+
+    // hash the file size
+    hasher.write_u64(filesize);
+
+    // hash the last 65536 bytes. do not overlap if the file is too small
+    if 65536 < filesize {
+        if filesize < 65536 * 2 {
+            file.seek(Start(65536));
+        }
+        else {
+            file.seek(End(-65536));
+        }
+
+        let mut buffer = vec![0u8; 65536];
+        let bytes_read = file.read(&mut buffer)?;
+
+        buffer.truncate(bytes_read);
+
+        hasher.write(&buffer);
+    }
+
+    Ok(hasher.finish())
 }
