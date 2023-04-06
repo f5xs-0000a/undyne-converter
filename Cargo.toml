@@ -1,3 +1,10 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:1131fa762b4adcf22887fd3ad3882fe4456163e05a68c6822109e3897cbdba69
-size 443
+[package]
+name = "criu_converter"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+nix = "*"
+rand = "*"
