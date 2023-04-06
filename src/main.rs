@@ -1,19 +1,30 @@
 // this trait import automatically assumes that it will work for Unix-based
 // operating systems and not Windows
-use std::io::BufReader;
-use std::io::BufRead as _;
-use std::fs::OpenOptions;
-use std::os::unix::process::CommandExt as _;
-use std::path::Path;
-use std::path::PathBuf;
-use nix::unistd::Uid;
-use nix::unistd::Pid;
-use std::process::Command;
-use nix::unistd::geteuid;
+use std::{
+    fs::OpenOptions,
+    io::{
+        BufRead as _,
+        BufReader,
+    },
+    os::unix::process::CommandExt as _,
+    path::{
+        Path,
+        PathBuf,
+    },
+    process::Command,
+};
+
+use nix::unistd::{
+    geteuid,
+    Pid,
+    Uid,
+};
 
 fn main() {
     if !geteuid().is_root() {
-        eprintln!("Application is not root. Have you tried running using sudo?");
+        eprintln!(
+            "Application is not root. Have you tried running using sudo?"
+        );
     }
 
     /*
@@ -22,7 +33,7 @@ fn main() {
             PathBuf::from("./src/test_files/Coffee Run.webm"),
             get_sudo_invoker(),
         );
-     
+
         converter.dump();
     }
     */
@@ -36,9 +47,11 @@ fn main() {
 
 fn get_sudo_invoker() -> Uid {
     match std::env::var("SUDO_UID") {
-        Ok(uid) => match uid.parse::<u32>() {
-            Ok(uid) => Uid::from_raw(uid),
-            Err(e) => panic!("Cannot parse {} into i32: {:?}", uid, e),
+        Ok(uid) => {
+            match uid.parse::<u32>() {
+                Ok(uid) => Uid::from_raw(uid),
+                Err(e) => panic!("Cannot parse {} into i32: {:?}", uid, e),
+            }
         },
         Err(e) => panic!("Cannot find the sudo-invoking user"),
     }
@@ -52,7 +65,10 @@ pub struct ConversionJob {
 // NOTE: we're just doing a read job. we're still not doing a conversion job.
 
 impl ConversionJob {
-    pub fn new(path: PathBuf, uid: Uid) -> ConversionJob {
+    pub fn new(
+        path: PathBuf,
+        uid: Uid,
+    ) -> ConversionJob {
         let spawned = Command::new("ffmpeg")
             .arg("-hide_banner")
             .arg("-i")
@@ -96,7 +112,10 @@ impl ConversionJob {
             .unwrap();
 
         if status.status.code() != Some(0) {
-            panic!("Job failed to be paused: {:?}", String::from_utf8(status.stderr));
+            panic!(
+                "Job failed to be paused: {:?}",
+                String::from_utf8(status.stderr)
+            );
         }
 
         // continue the job
@@ -107,8 +126,15 @@ impl ConversionJob {
 
         // move the dump folder to the target folder
         match std::fs::rename(&temp_folder, &target_folder) {
-            Err(e) => panic!("Unable to move {} to {}: {}", temp_folder.display(), target_folder.display(), e),
-            _ => {}
+            Err(e) => {
+                panic!(
+                    "Unable to move {} to {}: {}",
+                    temp_folder.display(),
+                    target_folder.display(),
+                    e
+                )
+            },
+            _ => {},
         }
     }
 
@@ -128,10 +154,8 @@ impl ConversionJob {
             .arg(&pid_filename)
             .spawn();
 
-        let pid_file = OpenOptions::new()
-            .read(true)
-            .open(&pid_filename)
-            .unwrap();
+        let pid_file =
+            OpenOptions::new().read(true).open(&pid_filename).unwrap();
         let mut pid_str = String::new();
         BufReader::new(pid_file).read_line(&mut pid_str);
         pid_str.pop();
