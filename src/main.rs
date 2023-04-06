@@ -78,6 +78,12 @@ fn main() {
     */
 }
 
+impl Drop for ConversionJob {
+    fn drop(&mut self) {
+        kill(self.pid, Signal::SIGKILL);
+    }
+}
+
 fn get_sudo_invoker() -> Uid {
     match std::env::var("SUDO_UID") {
         Ok(uid) => {
