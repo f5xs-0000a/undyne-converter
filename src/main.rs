@@ -1,7 +1,11 @@
 use core::hash::Hasher;
-use std::io::{
-    Read as _,
-    Seek as _,
+use std::{
+    ffi::OsStr,
+    io::{
+        Read as _,
+        Result as IoResult,
+        Seek as _,
+    },
 };
 use std::{
     fs::OpenOptions,
@@ -19,10 +23,16 @@ use std::{
     process::Command,
 };
 
-use nix::unistd::{
-    geteuid,
-    Pid,
-    Uid,
+use nix::{
+    sys::signal::{
+        kill,
+        Signal,
+    },
+    unistd::{
+        geteuid,
+        Pid,
+        Uid,
+    },
 };
 use rand::{
     distributions::Alphanumeric,
@@ -33,24 +43,35 @@ use rustc_hash::FxHasher;
 
 const TARGET_DUMP_DIRECTORY: &str = "./target_dump/";
 
+// TODO: implement LowerHex
+struct JobId(u64);
+
 fn main() {
     if !geteuid().is_root() {
         eprintln!("User is not root. Have you tried running using sudo?");
         return;
     }
 
+    let path = "./src/test_files/Coffee Run.webm";
+
     {
-        let converter = ConversionJob::new(
-            PathBuf::from("./src/test_files/Coffee Run.webm"),
-            get_sudo_invoker(),
-        );
+        let maybe_converter = ConversionJob::new(path, get_sudo_invoker());
+        let converter = match maybe_converter {
+            Ok(c) => c,
+            Err(e) => panic!("Cannot read {}: {:?}", path, e),
+        };
 
         converter.dump();
     }
 
     /*
     {
-        let converter = ConversionJob::restore(&PathBuf::from("./target_dump"));
+        let hash = match read_file_get_hash(path) {
+            Ok(h) => h,
+            Err(e) => panic!("Cannot read {}: {:?}", path, e),
+        };
+        let restore_path = format!("./{:x}/", hash);
+        let converter = ConversionJob::restore(&restore_path);
 
         converter.dump();
     }
@@ -72,13 +93,16 @@ fn get_sudo_invoker() -> Uid {
 pub struct ConversionJob {
     //path: PathBuf,
     pid: Pid,
+    job_id: JobId,
 }
 
 impl ConversionJob {
     pub fn new(
-        path: PathBuf,
+        path: &(impl AsRef<Path> + AsRef<OsStr> + ?Sized),
         uid: Uid,
-    ) -> ConversionJob {
+    ) -> IoResult<ConversionJob> {
+        let job_id = JobId(read_file_get_hash(path)?);
+
         let spawned = Command::new("ffmpeg")
             .arg("-hide_banner")
             .arg("-i")
@@ -93,18 +117,20 @@ impl ConversionJob {
             .spawn()
             .unwrap();
 
-        ConversionJob {
+        Ok(ConversionJob {
             //path,
             pid: Pid::from_raw(spawned.id() as i32),
-        }
+            job_id,
+        })
     }
 
     /// Dump the state of the program into a file
     pub fn dump(&self) {
-        let target_folder = PathBuf::from(TARGET_DUMP_DIRECTORY);
+        let target_folder = format!("./{:x}", self.job_id.0);
 
         // create the temporary folder
-        let temp_path = format!("./temp-{}/", generate_random_string());
+        let temp_path =
+            format!("./{:x}-{}/", self.job_id.0, generate_random_string());
         let temp_folder = PathBuf::from(temp_path);
         std::fs::create_dir(&temp_folder).unwrap();
 
@@ -128,7 +154,7 @@ impl ConversionJob {
         }
 
         // continue the job
-        nix::sys::signal::kill(self.pid, nix::sys::signal::Signal::SIGCONT);
+        kill(self.pid, Signal::SIGCONT);
 
         // remove the dump file, if it exists
         std::fs::remove_dir_all(&target_folder);
@@ -139,7 +165,7 @@ impl ConversionJob {
                 panic!(
                     "Unable to move {} to {}: {}",
                     temp_folder.display(),
-                    target_folder.display(),
+                    target_folder,
                     e
                 )
             },
@@ -147,9 +173,7 @@ impl ConversionJob {
         }
     }
 
-    pub fn restore(dump_path: &Path) -> ConversionJob {
-        let target_folder = PathBuf::from(TARGET_DUMP_DIRECTORY);
-
+    pub fn restore(dump_path: &(impl AsRef<Path> + ?Sized)) -> ConversionJob {
         // create the file at which to write the PID into
         // TODO: see the todo in dump()
         let pid_filename = PathBuf::from("./pidfile.txt");
@@ -158,7 +182,7 @@ impl ConversionJob {
         Command::new("criu")
             .arg("restore")
             .arg("--images-dir")
-            .arg(target_folder)
+            .arg(dump_path.as_ref())
             .arg("--shell-job")
             .arg("--pidfile")
             .arg(&pid_filename)
@@ -173,8 +197,12 @@ impl ConversionJob {
         let pid = pid_str.parse::<i32>().unwrap();
         let pid = Pid::from_raw(pid);
 
+        // TODO: this should be obtained from a database
+        let job_id = JobId(12345);
+
         ConversionJob {
             pid,
+            job_id,
         }
     }
 }
@@ -200,9 +228,7 @@ fn generate_random_string() -> String {
 ///
 /// If the file's length is less than 65536 * 2, tail will not read the
 /// overlapping bytes.
-fn read_file_get_hash(
-    path: &(impl AsRef<Path> + ?Sized)
-) -> std::io::Result<u64> {
+fn read_file_get_hash(path: &(impl AsRef<Path> + ?Sized)) -> IoResult<u64> {
     use std::io::SeekFrom::{
         End,
         Start,
