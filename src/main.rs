@@ -19,6 +19,11 @@ use nix::unistd::{
     Pid,
     Uid,
 };
+use rand::{
+    distributions::Alphanumeric,
+    rngs::OsRng,
+    Rng as _,
+};
 
 fn main() {
     if !geteuid().is_root() {
@@ -91,12 +96,11 @@ impl ConversionJob {
 
     /// Dump the state of the program into a file
     pub fn dump(&self) {
-        // create the temporary folder
-        // TODO: you have to create a folder that does not exist yet, and
-        // said process must be locked behind a mutex. only one of it (making
-        // the folder) can happen at a time.
-        let temp_folder = PathBuf::from("./temp-0123456789abcdef/");
         let target_folder = PathBuf::from("./target_dump");
+
+        // create the temporary folder
+        let temp_path = format!("./temp-{}/", generate_random_string());
+        let temp_folder = PathBuf::from(temp_path);
         std::fs::create_dir(&temp_folder).unwrap();
 
         // pause the job
@@ -167,4 +171,13 @@ impl ConversionJob {
             pid,
         }
     }
+}
+
+/// Generates a random string of 16 alphanumeric characters
+fn generate_random_string() -> String {
+    OsRng
+        .sample_iter(Alphanumeric)
+        .map(|u| u as char)
+        .take(16)
+        .collect::<String>()
 }
