@@ -9,3 +9,4 @@ edition = "2021"
 nix = "*"
 rand = "*"
 rustc-hash = "1.1"
+clap = { version = "*", features = ["derive"] }

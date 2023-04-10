@@ -23,6 +23,7 @@ use std::{
     process::Command,
 };
 
+use clap::Parser;
 use nix::{
     sys::signal::{
         kill,
@@ -43,39 +44,49 @@ use rustc_hash::FxHasher;
 
 const TARGET_DUMP_DIRECTORY: &str = "./target_dump/";
 
+#[derive(PartialEq, Parser)]
+enum App {
+    Dump,
+    Restore,
+}
+
 // TODO: implement LowerHex
 struct JobId(u64);
 
 fn main() {
+    use App::*;
+
     if !geteuid().is_root() {
         eprintln!("User is not root. Have you tried running using sudo?");
         return;
     }
 
+    let mode = App::parse();
+
     let path = "./src/test_files/Coffee Run.webm";
 
-    {
-        let maybe_converter = ConversionJob::new(path, get_sudo_invoker());
-        let converter = match maybe_converter {
-            Ok(c) => c,
-            Err(e) => panic!("Cannot read {}: {:?}", path, e),
-        };
+    match mode {
+        Dump => {
+            let maybe_converter = ConversionJob::new(path, get_sudo_invoker());
+            let converter = match maybe_converter {
+                Ok(c) => c,
+                Err(e) => panic!("Cannot read {}: {:?}", path, e),
+            };
 
-        converter.dump();
-    }
+            converter.dump();
+        },
 
-    /*
-    {
-        let hash = match read_file_get_hash(path) {
-            Ok(h) => h,
-            Err(e) => panic!("Cannot read {}: {:?}", path, e),
-        };
-        let restore_path = format!("./{:x}/", hash);
-        let converter = ConversionJob::restore(&restore_path);
+        Restore => {
+            let hash = match read_file_get_hash(path) {
+                Ok(h) => h,
+                Err(e) => panic!("Cannot read {}: {:?}", path, e),
+            };
+            let restore_path = format!("./{:x}/", hash);
+            let converter = ConversionJob::restore(&restore_path);
 
-        converter.dump();
-    }
-    */
+            //converter.dump();
+        },
+    };
 }
 
 impl Drop for ConversionJob {
