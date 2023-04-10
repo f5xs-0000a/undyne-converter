@@ -1,4 +1,7 @@
-use core::hash::Hasher;
+use core::{
+    hash::Hasher,
+    mem::drop,
+};
 use std::{
     ffi::OsStr,
     io::{
@@ -7,10 +10,6 @@ use std::{
         Seek as _,
     },
     process::Stdio,
-};
-use libc::{
-    getpid,
-    setsid,
 };
 use std::{
     fs::OpenOptions,
@@ -29,6 +28,10 @@ use std::{
 };
 
 use clap::Parser;
+use libc::{
+    getpid,
+    setsid,
+};
 use nix::{
     sys::signal::{
         kill,
@@ -46,8 +49,6 @@ use rand::{
     Rng as _,
 };
 use rustc_hash::FxHasher;
-
-const TARGET_DUMP_DIRECTORY: &str = "./target_dump/";
 
 #[derive(PartialEq, Parser)]
 enum App {
@@ -87,8 +88,8 @@ fn main() {
                 Err(e) => panic!("Cannot read {}: {:?}", path, e),
             };
             let restore_path = format!("./{:x}/", hash);
-            let converter = ConversionJob::restore(&restore_path);
 
+            let _converter = ConversionJob::restore(&restore_path);
             //converter.dump();
         },
     };
@@ -96,7 +97,8 @@ fn main() {
 
 impl Drop for ConversionJob {
     fn drop(&mut self) {
-        kill(self.pid, Signal::SIGKILL);
+        // kill without regards
+        drop(kill(self.pid, Signal::SIGKILL));
     }
 }
 
@@ -108,7 +110,7 @@ fn get_sudo_invoker() -> Uid {
                 Err(e) => panic!("Cannot parse {} into i32: {:?}", uid, e),
             }
         },
-        Err(e) => panic!("Cannot find the sudo-invoking user"),
+        Err(e) => panic!("Cannot find the sudo-invoking user: {:?}", e),
     }
 }
 
@@ -125,7 +127,8 @@ impl ConversionJob {
     ) -> IoResult<ConversionJob> {
         let job_id = JobId(read_file_get_hash(path)?);
 
-        let spawned = Command::new("ffmpeg")
+        let spawned = unsafe {
+            Command::new("ffmpeg")
             .arg("-hide_banner")
             .arg("-i")
             .arg(&path)
@@ -146,16 +149,15 @@ impl ConversionJob {
             .stderr(Stdio::null())
             // criu also complains, if the process restored is not a shell job
             // (related above), and the process is not its own session leader
-            .before_exec(|| {
-                unsafe {
-                    setsid();
-                    // Make the command the leader of the new session
-                    libc::setpgid(0, getpid());
-                }
+            .pre_exec(|| {
+                setsid();
+                // Make the command the leader of the new session
+                libc::setpgid(0, getpid());
                 Ok(())
             })
             .spawn()
-            .unwrap();
+            .unwrap()
+        };
 
         Ok(ConversionJob {
             //path,
@@ -166,8 +168,6 @@ impl ConversionJob {
 
     /// Dump the state of the program into a file
     pub fn dump(&self) {
-        use std::os::linux::fs::MetadataExt as _;
-
         let target_folder = format!("./{:x}", self.job_id.0);
 
         // create the temporary folder
@@ -175,22 +175,6 @@ impl ConversionJob {
             format!("./{:x}-{}/", self.job_id.0, generate_random_string());
         let temp_folder = PathBuf::from(temp_path);
         std::fs::create_dir(&temp_folder).unwrap();
-
-        // using the PID of the job, obtain the zeroth file descriptor and its
-        // rdev and dev
-        let zeroth_fd = PathBuf::from(format!("/proc/{}/fd/0", self.pid));
-        let zfd_cmd = Command::new("ls")
-            .arg("-l")
-            .arg("-a")
-            .arg(format!("/proc/{}/fd/", self.pid))
-            .output()
-            .unwrap();
-
-        eprintln!("{}", String::from_utf8(zfd_cmd.stdout).unwrap());
-
-        let zfd_meta = zeroth_fd.metadata().unwrap();
-        let zfd_rdev = zfd_meta.st_rdev();
-        let zfd_dev = zfd_meta.st_dev();
 
         // pause the job
         let status = Command::new("criu")
@@ -202,9 +186,6 @@ impl ConversionJob {
             .output()
             .unwrap();
 
-        eprintln!("{}", String::from_utf8(status.stdout.clone()).unwrap());
-        eprintln!("{}", String::from_utf8(status.stderr.clone()).unwrap());
-
         if status.status.code() != Some(0) {
             panic!(
                 "Job failed to be paused: {:?}",
@@ -213,10 +194,10 @@ impl ConversionJob {
         }
 
         // continue the job
-        kill(self.pid, Signal::SIGCONT);
+        kill(self.pid, Signal::SIGCONT).unwrap();
 
         // remove the dump file, if it exists
-        std::fs::remove_dir_all(&target_folder);
+        drop(std::fs::remove_dir_all(&target_folder));
 
         // move the dump folder to the target folder
         match std::fs::rename(&temp_folder, &target_folder) {
@@ -244,7 +225,7 @@ impl ConversionJob {
         core::mem::drop(std::fs::remove_file(&pid_filename));
 
         // resume the job
-        let x = Command::new("criu")
+        Command::new("criu")
             .arg("restore")
             .arg("--images-dir")
             .arg(dump_path.as_ref())
@@ -255,17 +236,10 @@ impl ConversionJob {
             .output()
             .unwrap();
 
-        eprintln!("{}", String::from_utf8(x.stdout).unwrap());
-        eprintln!("{}", String::from_utf8(x.stderr).unwrap());
-
-        std::thread::sleep(std::time::Duration::new(5, 0));
-
-        let pid_file = OpenOptions::new()
-            .read(true)
-            .open(&pid_filename)
-            .unwrap();
+        let pid_file =
+            OpenOptions::new().read(true).open(&pid_filename).unwrap();
         let mut pid_str = String::new();
-        BufReader::new(pid_file).read_line(&mut pid_str);
+        BufReader::new(pid_file).read_line(&mut pid_str).unwrap();
         pid_str.pop();
 
         let pid = pid_str.parse::<i32>().unwrap();
@@ -338,10 +312,10 @@ fn read_file_get_hash(path: &(impl AsRef<Path> + ?Sized)) -> IoResult<u64> {
     // hash the last 65536 bytes. do not overlap if the file is too small
     if 65536 < filesize {
         if filesize < 65536 * 2 {
-            file.seek(Start(65536));
+            file.seek(Start(65536)).unwrap();
         }
         else {
-            file.seek(End(-65536));
+            file.seek(End(-65536)).unwrap();
         }
 
         let mut buffer = vec![0u8; 65536];
