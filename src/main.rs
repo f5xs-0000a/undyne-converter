@@ -56,8 +56,14 @@ enum App {
     Restore,
 }
 
-// TODO: implement LowerHex
+#[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
 struct JobId(u64);
+
+impl core::fmt::LowerHex for JobId {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), core::fmt::Error> {
+        self.0.fmt(f)
+    }
+}
 
 fn main() {
     use App::*;
@@ -168,11 +174,11 @@ impl ConversionJob {
 
     /// Dump the state of the program into a file
     pub fn dump(&self) {
-        let target_folder = format!("./{:x}", self.job_id.0);
+        let target_folder = format!("./{:x}", self.job_id);
 
         // create the temporary folder
         let temp_path =
-            format!("./{:x}-{}/", self.job_id.0, generate_random_string());
+            format!("./{:x}-{}/", self.job_id, generate_random_string());
         let temp_folder = PathBuf::from(temp_path);
         std::fs::create_dir(&temp_folder).unwrap();
 
