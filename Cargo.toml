@@ -10,3 +10,4 @@ nix = "*"
 rand = "*"
 rustc-hash = "1.1"
 clap = { version = "*", features = ["derive"] }
+libc = "*"

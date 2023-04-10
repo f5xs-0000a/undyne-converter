@@ -6,6 +6,11 @@ use std::{
         Result as IoResult,
         Seek as _,
     },
+    process::Stdio,
+};
+use libc::{
+    getpid,
+    setsid,
 };
 use std::{
     fs::OpenOptions,
@@ -130,7 +135,25 @@ impl ConversionJob {
             .arg("-f")
             .arg("null")
             .arg("/dev/null")
+            // set the user ID into the caller's
             .uid(uid.into())
+            // we have to detach the process from the tty so criu doesn't
+            // have to complain that the process we're trying to restore does
+            // not have a tty included
+            // to do that, set all stdin, stdout, and stderr to null
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            // criu also complains, if the process restored is not a shell job
+            // (related above), and the process is not its own session leader
+            .before_exec(|| {
+                unsafe {
+                    setsid();
+                    // Make the command the leader of the new session
+                    libc::setpgid(0, getpid());
+                }
+                Ok(())
+            })
             .spawn()
             .unwrap();
 
@@ -143,6 +166,8 @@ impl ConversionJob {
 
     /// Dump the state of the program into a file
     pub fn dump(&self) {
+        use std::os::linux::fs::MetadataExt as _;
+
         let target_folder = format!("./{:x}", self.job_id.0);
 
         // create the temporary folder
@@ -151,6 +176,22 @@ impl ConversionJob {
         let temp_folder = PathBuf::from(temp_path);
         std::fs::create_dir(&temp_folder).unwrap();
 
+        // using the PID of the job, obtain the zeroth file descriptor and its
+        // rdev and dev
+        let zeroth_fd = PathBuf::from(format!("/proc/{}/fd/0", self.pid));
+        let zfd_cmd = Command::new("ls")
+            .arg("-l")
+            .arg("-a")
+            .arg(format!("/proc/{}/fd/", self.pid))
+            .output()
+            .unwrap();
+
+        eprintln!("{}", String::from_utf8(zfd_cmd.stdout).unwrap());
+
+        let zfd_meta = zeroth_fd.metadata().unwrap();
+        let zfd_rdev = zfd_meta.st_rdev();
+        let zfd_dev = zfd_meta.st_dev();
+
         // pause the job
         let status = Command::new("criu")
             .arg("dump")
@@ -158,10 +199,11 @@ impl ConversionJob {
             .arg(&format!("{}", self.pid))
             .arg("--images-dir")
             .arg(&temp_folder)
-            .arg("--shell-job")
-            .arg("--leave-stopped")
             .output()
             .unwrap();
+
+        eprintln!("{}", String::from_utf8(status.stdout.clone()).unwrap());
+        eprintln!("{}", String::from_utf8(status.stderr.clone()).unwrap());
 
         if status.status.code() != Some(0) {
             panic!(
@@ -193,26 +235,45 @@ impl ConversionJob {
     pub fn restore(dump_path: &(impl AsRef<Path> + ?Sized)) -> ConversionJob {
         // create the file at which to write the PID into
         // TODO: see the todo in dump()
-        let pid_filename = PathBuf::from("./pidfile.txt");
+        let mut pid_filename = std::fs::canonicalize(".").unwrap();
+        pid_filename.push("6ce48dd230699a11");
+        pid_filename.push("pidfile.txt");
+
+        // delete the pid file if it exists.
+        // criu doesn't like it when it exists.
+        core::mem::drop(std::fs::remove_file(&pid_filename));
 
         // resume the job
-        Command::new("criu")
+        let x = Command::new("criu")
             .arg("restore")
             .arg("--images-dir")
             .arg(dump_path.as_ref())
-            .arg("--shell-job")
+            //.arg("--shell-job")
+            .arg("--restore-detached")
             .arg("--pidfile")
             .arg(&pid_filename)
-            .spawn();
+            .output()
+            .unwrap();
 
-        let pid_file =
-            OpenOptions::new().read(true).open(&pid_filename).unwrap();
+        eprintln!("{}", String::from_utf8(x.stdout).unwrap());
+        eprintln!("{}", String::from_utf8(x.stderr).unwrap());
+
+        std::thread::sleep(std::time::Duration::new(5, 0));
+
+        let pid_file = OpenOptions::new()
+            .read(true)
+            .open(&pid_filename)
+            .unwrap();
         let mut pid_str = String::new();
         BufReader::new(pid_file).read_line(&mut pid_str);
         pid_str.pop();
 
         let pid = pid_str.parse::<i32>().unwrap();
         let pid = Pid::from_raw(pid);
+
+        // delete the pid file if it exists.
+        // criu doesn't like it when it exists.
+        core::mem::drop(std::fs::remove_file(pid_filename));
 
         // TODO: this should be obtained from a database
         let job_id = JobId(12345);
