@@ -40,8 +40,11 @@ use nix::{
     },
     unistd::{
         geteuid,
+        Gid,
         Pid,
         Uid,
+        // until Rust stabilizes chown, we're importing this from nix
+        chown,
     },
 };
 use rand::{
@@ -98,9 +101,8 @@ fn main() {
                 Ok(h) => h,
                 Err(e) => panic!("Cannot read {}: {:?}", path, e),
             };
-            let restore_path = format!("./{:x}/", hash);
 
-            let _converter = ConversionJob::restore(&restore_path);
+            let _converter = ConversionJob::restore(&path).unwrap();
             //converter.dump();
         },
     };
@@ -112,6 +114,18 @@ impl Drop for ConversionJob {
         if let Some(pid) = self.pid {
             drop(kill(pid, Signal::SIGKILL));
         }
+    }
+}
+
+fn get_sudo_invoker_gid() -> Gid {
+    match std::env::var("SUDO_GID") {
+        Ok(uid) => {
+            match uid.parse::<u32>() {
+                Ok(uid) => Gid::from_raw(uid),
+                Err(e) => panic!("Cannot parse {} into i32: {:?}", uid, e),
+            }
+        },
+        Err(e) => panic!("Cannot find the sudo-invoking user: {:?}", e),
     }
 }
 
@@ -164,11 +178,19 @@ impl ConversionJob {
             pid: None,
         };
 
+        let working_path = dummy.create_working_path()?;
+
+        let stderr_name = working_path.join("stderr.log");
+        let stdout_name = working_path.join("stdout.log");
+
+        let stderr = OpenOptions::new().create(true).write(true).open(stderr_name).unwrap();
+        let stdout = OpenOptions::new().create(true).write(true).open(stdout_name).unwrap();
+
         let spawned = unsafe {
             Command::new("ffmpeg")
             .arg("-hide_banner")
             .arg("-i")
-            .arg(&dummy.path)
+            .arg(&file_path)
             .arg("-vn")
             .arg("-filter:a")
             .arg("loudnorm=print_format=json")
@@ -182,8 +204,8 @@ impl ConversionJob {
             // not have a tty included
             // to do that, set all stdin, stdout, and stderr to null
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
             // criu also complains, if the process restored is not a shell job
             // (related above), and the process is not its own session leader
             .pre_exec(|| {
@@ -266,6 +288,20 @@ impl ConversionJob {
         path
     }
 
+    /// Create the working path (using `working_path()`) and set its owner to
+    /// the appropriate user.
+    fn create_working_path(&self) -> IoResult<PathBuf> {
+        let path = self.working_path();
+
+        // create the folders
+        std::fs::create_dir_all(&path)?;
+
+        // set the owner
+        chown(&path, Some(get_sudo_invoker()), Some(get_sudo_invoker_gid()));
+
+        Ok(path)
+    }
+
     /// Obtain the saved-working path of a job.
     ///
     /// The hierarchy of paths go like this:
@@ -280,7 +316,6 @@ impl ConversionJob {
     /// The saved-working path is similar to the working path, except that
     /// when the process state is dumped into the dump path, so to are the files
     /// in the working path copied into saved_working.
-    /// written by the job's process are located.
     fn saved_working_path(&self) -> PathBuf {
         let mut path = self.job_path();
         path.push("saved_working");
@@ -434,7 +469,7 @@ impl ConversionJob {
         core::mem::drop(std::fs::remove_file(&pid_filename));
 
         // resume the job
-        Command::new("criu")
+        let x = Command::new("criu")
             .arg("restore")
             .arg("--images-dir")
             .arg(dummy.dump_path())
@@ -443,6 +478,9 @@ impl ConversionJob {
             .arg(&pid_filename)
             .output()
             .unwrap();
+
+        eprintln!("{}", String::from_utf8(x.stdout).unwrap());
+        eprintln!("{}", String::from_utf8(x.stderr).unwrap());
 
         // read the contents of the PID file
         let pid_file =
@@ -454,6 +492,8 @@ impl ConversionJob {
         // TODO: raise a manual IoError upon read failure
         let pid = pid_str.parse::<i32>().unwrap();
         let pid = Pid::from_raw(pid);
+
+        kill(pid, None);
 
         // delete the pid file if it exists.
         // criu doesn't like it when it exists.
