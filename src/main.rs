@@ -586,3 +586,221 @@ fn read_file_get_hash(path: &(impl AsRef<Path> + ?Sized)) -> IoResult<u64> {
 
     Ok(hasher.finish())
 }
+
+#[cfg(test)]
+mod test {
+    use std::os::unix::fs::MetadataExt as _;
+
+    use crate::*;
+
+    #[test]
+    fn folder_dance_works() {
+        // create procedure to automatically drop the test bed upon end
+        struct DropTestDir(PathBuf);
+        impl Drop for DropTestDir {
+            fn drop(&mut self) {
+                drop(std::fs::remove_dir_all(&self.0));
+            }
+        }
+
+        macro_rules! assert_path {
+            ($PATH:expr) => {{
+                let path = PathBuf::from(&$PATH);
+                assert!(path.exists());
+                path.metadata().unwrap()
+            }};
+
+            ($PATH:expr,) => { assert_path!($PATH) };
+
+            ($PATH:expr, FOLDER true $(, $MORE:ident $ARGS:expr)*) => {{
+                let metadata = assert_path!($PATH $(, $MORE $ARGS)*);
+                assert!(metadata.is_dir());
+                metadata
+            }};
+
+            ($PATH:expr, FILE true $(, $MORE:ident $ARGS:expr)*) => {{
+                let metadata = assert_path!($PATH $(, $MORE $ARGS)*);
+                assert!(metadata.is_file());
+                metadata
+            }};
+
+            ($PATH:expr, UID $UID:expr $(, $MORE:ident $ARGS:expr)*) => {{
+                let metadata = assert_path!($PATH $(, $MORE $ARGS)*);
+                assert_eq!(metadata.uid(), $UID);
+                metadata
+            }};
+        }
+
+        if !geteuid().is_root() {
+            panic!(
+                "Tester isn't root. Have you tried running this test as root?"
+            );
+        }
+
+        let invoker = get_sudo_invoker().as_raw();
+
+        let path = "./src/test_files/Coffee Run.webm";
+        let testing_base_path = PathBuf::from("/tmp/criu_test");
+
+        // start the converter
+        let converter = ConversionJob::new_with_base_path(
+            path,
+            get_sudo_invoker(),
+            Some(testing_base_path.clone()),
+        )
+        .unwrap();
+
+        // drop the test path once dropped
+        let _x = DropTestDir(testing_base_path);
+
+        // Stage 1: After starting job
+        // └ base
+        //   └ job
+        //     └ working
+        // the UID of the working path should be the invoker's
+        assert_path!(converter.job_path(), FOLDER true, UID 0);
+
+        // start dumping the job
+        converter.dump().unwrap();
+
+        // Stage 2: After dumping
+        // assert that these exist
+        // └ base
+        //   └ job
+        //     ├ dump
+        //     │ ├ files.img (f)
+        //     │ ├ inventory.img (f)
+        //     │ ├ pages-1.img (f)
+        //     │ ├ pstree.img (f)
+        //     │ ├ seccomp.img (f)
+        //     │ └ stats-dump (f)
+        //     ├ saved_working
+        //     └ working
+        let files = [
+            "files.img",
+            "inventory.img",
+            "pages-1.img",
+            "pstree.img",
+            "seccomp.img",
+            "stats-dump",
+        ];
+        let saved_working_path_meta = assert_path!(
+            converter.saved_working_path(),
+            FOLDER true,
+            UID invoker
+        );
+        assert_path!(
+            converter.working_path(),
+            FOLDER true,
+            UID invoker
+        );
+        let dump_path_meta = assert_path!(
+            converter.dump_path(),
+            FOLDER true,
+            UID 0
+        );
+        for file in files.iter() {
+            let file = converter.dump_path().join(file);
+            assert_path!(file, FILE true, UID 0);
+        }
+
+        let job_path = converter.job_path();
+        let dump_path = converter.dump_path();
+        let working_path = converter.working_path();
+        let saved_working_path = converter.saved_working_path();
+
+        // drop the converter. we don't need that one.
+        drop(converter);
+
+        // Stage 3: After dropping the job.
+        // assert that these exist
+        // └ base
+        //   └ job
+        //     ├ dump
+        //     │ ├ files.img (f)
+        //     │ ├ inventory.img (f)
+        //     │ ├ pages-1.img (f)
+        //     │ ├ pstree.img (f)
+        //     │ ├ seccomp.img (f)
+        //     │ └ stats-dump (f)
+        //     └ saved_working
+        assert_path!(job_path, FOLDER true, UID invoker);
+        assert_path!(dump_path, FOLDER true, UID 0);
+        assert_path!(saved_working_path, FOLDER true, UID 0);
+        for file in files.iter() {
+            let file = dump_path.join(file);
+            assert_path!(file, FILE true, UID 0);
+        }
+        // the interesting part here is that the working path SHOULD NOT exist
+        assert!(!working_path.exists());
+
+        // restore the job
+        let converter = ConversionJob::restore(&path).unwrap();
+
+        // Stage 4: After restoring the job.
+        // assert that these exist
+        // └ base
+        //   └ job
+        //     ├ dump
+        //     │ ├ files.img (f)
+        //     │ ├ inventory.img (f)
+        //     │ ├ pages-1.img (f)
+        //     │ ├ pstree.img (f)
+        //     │ ├ seccomp.img (f)
+        //     │ └ stats-dump (f)
+        //     ├ saved_working
+        //     └ working
+        assert_path!(converter.job_path(), FOLDER true, UID 0);
+        assert_path!(converter.dump_path(), FOLDER true, UID 0);
+        assert_path!(converter.saved_working_path(), FOLDER true, UID invoker);
+        assert_path!(converter.working_path(), FOLDER true, UID invoker);
+        for file in files.iter() {
+            let file = converter.dump_path().join(file);
+            assert_path!(file, FILE true, UID 0);
+        }
+
+        // dump it again
+        converter.dump();
+
+        // Stage 5: After dumping again
+        // assert that these exist
+        // └ base
+        //   └ job
+        //     ├ dump
+        //     │ ├ files.img (f)
+        //     │ ├ inventory.img (f)
+        //     │ ├ pages-1.img (f)
+        //     │ ├ pstree.img (f)
+        //     │ ├ seccomp.img (f)
+        //     │ └ stats-dump (f)
+        //     ├ saved_working
+        //     └ working
+        // also assert that the creation/modified date of the dump and
+        // saved_working folders are later than the original
+        let files = [
+            "files.img",
+            "inventory.img",
+            "pages-1.img",
+            "pstree.img",
+            "seccomp.img",
+            "stats-dump",
+        ];
+        assert_path!(
+            converter.saved_working_path(),
+            FOLDER true,
+            UID invoker
+        );
+        assert_path!(
+            converter.working_path(),
+            FOLDER true,
+            UID invoker
+        );
+        assert_path!(converter.dump_path(), FOLDER true, UID 0);
+        for file in files.iter() {
+            let file = converter.dump_path().join(file);
+            assert_path!(file, FILE true, UID 0);
+        }
+
+        // let the dropper do its job
+    }
+}
