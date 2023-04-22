@@ -1,3 +1,25 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:0b9fed31a2f923748905e721da707e68613c06a0f31a87cd071d66ce9d090db6
-size 585
+use std::process::{
+    Command,
+    Stdio,
+};
+
+fn main() {
+    match std::fs::remove_file("target/output_database.sqlite3") {
+        _ => {},
+    }
+
+    let cat_process = Command::new("cat")
+        .arg("src/schema.sql")
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let sqlite_output = Command::new("sqlite3")
+        .arg("target/output_database.sqlite3")
+        .stdin(cat_process.stdout.unwrap())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8(sqlite_output.stderr).unwrap();
+    assert!(stderr.is_empty(), "{}", stderr);
+}
