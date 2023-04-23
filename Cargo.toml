@@ -6,9 +6,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nix = "*"
-rand = "*"
-rustc-hash = "1.1"
-clap = { version = "*", features = ["derive"] }
-libc = "*"
+axum = "0.6"
+tokio = { version = "*", features = ["macros", "rt-multi-thread"] }
+#nix = "*"
+#rand = "*"
+#rustc-hash = "1.1"
+#clap = { version = "*", features = ["derive"] }
+#libc = "*"
 
