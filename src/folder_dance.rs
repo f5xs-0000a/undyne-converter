@@ -4,6 +4,7 @@
 //! and restore()
 
 use std::{
+    fs::DirBuilder,
     fs::metadata,
     io::{
         Error as IoError,
@@ -22,40 +23,50 @@ use rand::{
     Rng as _,
 };
 
-/// Moves a path into a new name and returns the new name if it is moved.
+/// Copies a path into a new name and returns the new name if it is moved.
 ///
 /// # Panics
 ///
 /// Panics if `path` cannot be moved.
 ///
 /// TODO: this and rename should come from the same interface
-pub fn copy_area_into_new_name(path: &Path) -> Option<PathBuf> {
-    // from `path`, create a new randomized name. a randomized name.
-    let target_path = path.to_owned();
+pub fn copy_area_into_new_name(path: &Path) -> IoResult<PathBuf> {
+    if !path.exists() {
+        return Err(IoError::new(ErrorKind::NotFound, "path not found"));
+    }
 
-    // check if the old target exists
-    let old_path_exists = match metadata(&path).map(|m| m.is_dir()) {
-        Ok(true) => true,
-        Ok(false) => {
-            if std::fs::remove_file(&target_path).is_err() {}
+    if !path.is_dir() {
+        return Err(IoError::new(ErrorKind::NotADirectory, "path is not a file"));
+    }
 
-            eprintln!(
-                "A file labelled {} has been deleted.",
-                target_path.display()
-            );
-            return None;
-        },
-        Err(e) if e.kind() == ErrorKind::NotFound => return None,
-        Err(e) => {
-            panic!(
-                "Failed to move directory {}: {:?}",
-                target_path.display(),
-                e
-            )
-        },
-    };
+    let new_path = randomize_until_vacant(path)?;
+    std::process::Command::new("cp").arg("--archive").arg(path).arg(new_path.as_path()).output().unwrap();
+    //DirBuilder::new()
+    //    .recursive(true)
+    //    .create(new_path.as_path())
+    //    .and_then(|_| {
+    //        std::fs::copy(path, new_path.as_path())
+    //    })?;
+    Ok(new_path)
+}
 
-    Some(target_path)
+/// Renames a path to get a new random name.
+fn randomize(path: &Path) -> IoResult<PathBuf> {
+    let random_string = generate_random_string();
+    let file_name = path.file_name().unwrap().to_str().unwrap();
+    let file_name_with_random_string = format!("{}-{}", random_string, file_name);
+    Ok(path.with_file_name(file_name_with_random_string))
+}
+
+/// Renames a path to get a new random name that does not exist yet.
+fn randomize_until_vacant(path: &Path) -> IoResult<PathBuf> {
+    let mut new_path = randomize(path)?;
+
+    while new_path.exists() {
+        new_path = randomize(path)?;
+    }
+
+    Ok(new_path)
 }
 
 ///

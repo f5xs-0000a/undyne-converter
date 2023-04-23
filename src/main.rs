@@ -1,3 +1,5 @@
+#![feature(io_error_more)]
+
 mod folder_dance;
 
 use core::{
@@ -415,7 +417,7 @@ impl ConversionJob {
         // not a valid directory containing valid dump files is minimal
         //
         // we've done step 1 from this point.
-
+        
         // step 2
         let new_working =
             folder_dance::copy_area_into_new_name(&self.working_path())
@@ -436,7 +438,7 @@ impl ConversionJob {
         std::fs::rename(&temp_path, self.dump_path());
 
         // step 6
-        std::fs::rename(&new_working, self.working_path());
+        std::fs::rename(&new_working, self.saved_working_path());
 
         // step 7
         if let Ok(old_dump) = old_dump {
@@ -476,6 +478,9 @@ impl ConversionJob {
         // delete the pid file if it exists.
         // criu doesn't like it when it exists.
         core::mem::drop(std::fs::remove_file(&pid_filename));
+
+        assert!(dummy.dump_path().exists());
+        dbg!(&pid_filename);
 
         // resume the job
         let x = Command::new("criu")
@@ -724,9 +729,9 @@ mod test {
         //     │ ├ seccomp.img (f)
         //     │ └ stats-dump (f)
         //     └ saved_working
-        assert_path!(job_path, FOLDER true, UID invoker);
+        assert_path!(job_path, FOLDER true, UID 0);
         assert_path!(dump_path, FOLDER true, UID 0);
-        assert_path!(saved_working_path, FOLDER true, UID 0);
+        assert_path!(saved_working_path, FOLDER true, UID invoker);
         for file in files.iter() {
             let file = dump_path.join(file);
             assert_path!(file, FILE true, UID 0);
