@@ -1,5 +1,6 @@
 use core::future::Future;
 use std::{
+    ffi::OsStr,
     path::PathBuf,
     sync::Arc,
 };
@@ -31,7 +32,7 @@ pub enum JobToOverseerMessage {
     VideoSecondPassProgress(PathBuf),
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum AudioVideoStatus {
     FirstPass,
     SecondPass,
@@ -40,7 +41,7 @@ pub enum AudioVideoStatus {
 
 /// Runs a job and returns both the future and the receiver for its messages.
 pub fn run_job(
-    path: PathBuf
+    path: impl AsRef<OsStr>
 ) -> (
     impl Future<Output = PathBuf>,
     UnboundedReceiver<JobStatus>,

@@ -20,7 +20,29 @@ use tokio::{
 
 #[tokio::main]
 async fn main() {
-    //do_job("./src/test_files/Coffee Run.webm").await;
+    let (
+        future,
+        mut status_receiver,
+        status_request_sender
+    ) = crate::overseer::run_job("./src/test_files/Coffee Run.webm");
+
+    let status_update = async {
+        loop {
+            status_request_sender.send(crate::overseer::RequestForJobStatus);
+            let status = status_receiver.recv().await;
+            eprintln!("{:?}", status);
+            tokio::time::sleep(std::time::Duration::new(5, 0)).await;
+        }
+    };
+
+    loop {
+        tokio::select! {
+            biased;
+
+            _ = future => break,
+            _ = status_update => unimplemented!(),
+        }
+    }
 
     /*
     let router = Router::new()

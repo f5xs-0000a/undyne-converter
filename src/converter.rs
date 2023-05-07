@@ -203,10 +203,7 @@ async fn convert_audio_tracks(
             .output()
             .await
             .unwrap();
-
-        eprintln!("{}", String::from_utf8(command.stderr).unwrap());
-
-        eprintln!("Created {}", path);
+        
         converted_audio_paths.push(path.into());
     }
 
@@ -322,7 +319,6 @@ async fn convert_video(
 
     let (crf, _) = join!(crf_determine_future, first_pass_future,);
 
-    eprintln!("Starting conversion...");
     // TODO: add message here that conversion video conversion has started
     // and send the supposed log file
     Command::new("ffmpeg")
@@ -375,7 +371,7 @@ async fn merge_media(
     unimplemented!()
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct JobStatus {
     audio: AudioVideoStatus,
     video: AudioVideoStatus,
