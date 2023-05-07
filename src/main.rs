@@ -7,7 +7,14 @@ use std::{
         PathBuf,
     },
 };
+use std::sync::Arc;
 
+use tokio::join;
+use tokio::select;
+use core::future::Future;
+use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::UnboundedSender;
 use axum::{
     body::boxed,
     extract::Multipart,
@@ -67,7 +74,7 @@ impl ConversionState {
 */
 
 #[derive(Debug, Clone)]
-struct AudioConstants {
+pub struct AudioConstants {
     input_i: f64,
     input_tp: f64,
     input_lra: f64,
@@ -143,7 +150,7 @@ async fn determine_audio_constants(
 ) -> Vec<AudioConstants> {
     let mut constants = vec![];
 
-    for channel_no in 0 .. {
+    for unbounded_channel_no in 0 .. {
         let audio_stats = Command::new("ffmpeg")
             .arg("-hide_banner")
             // read this specific file
@@ -152,7 +159,7 @@ async fn determine_audio_constants(
             // ignore the video portion
             .arg("-vn")
             .arg("-map")
-            .arg(&format!("0:a:{}", channel_no))
+            .arg(&format!("0:a:{}", unbounded_channel_no))
             // use the filter loudnorm to print the loudness constants in JSON
             .arg("-filter:a")
             .arg("loudnorm=print_format=json")
@@ -196,8 +203,8 @@ async fn determine_audio_constants(
     constants
 }
 
-async fn convert_audio(
-    constants: Vec<AudioConstants>,
+async fn convert_audio_tracks(
+    constants: &[AudioConstants],
     input_path: impl AsRef<OsStr>,
     target_i: f64,
 ) -> Vec<PathBuf> {
@@ -286,6 +293,7 @@ async fn determine_video_dimensions(path: impl AsRef<OsStr>) -> Option<(usize, u
     serde_json::from_str::<Entries>(&dimensions).ok().and_then(|e| e.streams.into_iter().next()).map(|dim| (dim.width, dim.height))
 }
 
+/*
 async fn do_job(path: impl AsRef<OsStr>) {
     eprintln!("Analyzing audio...");
     let audio_constants = determine_audio_constants(&path).await;
@@ -364,10 +372,265 @@ async fn do_job(path: impl AsRef<OsStr>) {
     let mut conversion = String::from_utf8(conversion.stderr);
     eprintln!("{}", conversion.unwrap());
 }
+*/
+
+pub enum JobToOverseerMessage {
+    // finished progresses
+    //AudioFirstPassFinished,
+    AudioSecondPassFinished,
+    VideoFirstPassFinished,
+    VideoSecondPassFinished,
+
+    AudioConstantsDetermined(Arc<[AudioConstants]>), // aka AudioFirstPassFinished
+    VideoDimensionsDetermined(usize, usize),
+    VideoCrfDetermined(usize),
+    
+    VideoSecondPassProgress(PathBuf),
+}
+
+
+#[derive(Copy, Clone)]
+pub enum AudioVideoStatus {
+    FirstPass,
+    SecondPass,
+    Finished,
+}
+
+#[derive(Clone)]
+pub struct JobStatus {
+    audio: AudioVideoStatus,
+    video: AudioVideoStatus,
+
+    audio_constants: Option<Arc<[AudioConstants]>>,
+    dimensions: Option<(usize, usize)>,
+    crf: Option<usize>,
+
+    video_conversion_log_path: Option<PathBuf>,
+}
+
+impl JobStatus {
+    fn new() -> JobStatus {
+        JobStatus {
+            audio: AudioVideoStatus::FirstPass,
+            video: AudioVideoStatus::FirstPass,
+
+            audio_constants: None,
+            dimensions: None,
+            crf: None,
+
+            video_conversion_log_path: None,
+        }
+    }
+
+    fn process_update(&mut self, update: JobToOverseerMessage) {
+        use JobToOverseerMessage::*;
+
+        // TODO and FIXME: fix invalid state updates
+        match update {
+            AudioSecondPassFinished => self.audio = AudioVideoStatus::Finished,
+            VideoFirstPassFinished => self.video = AudioVideoStatus::SecondPass,
+            VideoSecondPassFinished => self.video = AudioVideoStatus::Finished,
+
+            AudioConstantsDetermined(audio_constants) => self.audio_constants = Some(audio_constants),
+            VideoDimensionsDetermined(width, height) => self.dimensions = Some((width, height)),
+            VideoCrfDetermined(crf) => self.crf = Some(crf),
+            
+            VideoSecondPassProgress(path) => self.video_conversion_log_path = Some(path),
+        }
+    }
+}
+
+/// Overseer for a job.
+///
+/// The only job the overseer has is to:
+/// 1. run the actual job
+/// 2. receive progress from the job
+/// 3. send progress feedback to main thread
+
+async fn convert_audio(path: impl AsRef<OsStr>, sender: UnboundedSender<JobToOverseerMessage>) -> Vec<PathBuf> {
+    let audio_constants = determine_audio_constants(&path).await;
+    let audio_constants: Arc<[AudioConstants]> = Arc::from(audio_constants);
+    sender.send(JobToOverseerMessage::AudioConstantsDetermined(audio_constants.clone()));
+
+    let converted_audios = convert_audio_tracks(&*audio_constants, &path, -18.).await;
+    sender.send(JobToOverseerMessage::AudioSecondPassFinished);
+
+    converted_audios
+}
+
+async fn convert_video(path: impl AsRef<OsStr>, sender: UnboundedSender<JobToOverseerMessage>) -> PathBuf {
+    let crf_determine_future = async {
+        let (width, height) = determine_video_dimensions(&path).await.unwrap();
+        sender.send(JobToOverseerMessage::VideoDimensionsDetermined(width, height));
+
+        let video_crf = crf(width, height);
+        sender.send(JobToOverseerMessage::VideoCrfDetermined(video_crf));
+
+        video_crf
+    };
+
+    let first_pass_log = "./ffmpeg2pass-0.log";
+
+    let first_pass_future = async {
+        Command::new("ffmpeg")
+            .arg("-hide_banner")
+            .arg("-i")
+            .arg(&path)
+            .arg("-codec:v")
+            .arg("libaom-av1")
+            .arg("-an")
+            .arg("-pass")
+            .arg("1")
+            .arg("-passlogfile")
+            .arg(&first_pass_log)
+            .arg("-f")
+            .arg("null")
+            .arg("/dev/null")
+            .output()
+            .await
+            .unwrap();
+        sender.send(JobToOverseerMessage::VideoFirstPassFinished);
+    };
+
+    let (crf, _) = join!(
+        crf_determine_future,
+        first_pass_future,
+    );
+
+    eprintln!("Starting conversion...");
+    let conversion = Command::new("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-i")
+        .arg(&path)
+        // General video options
+        .arg("-codec:v")
+        .arg("libaom-av1")
+        .arg("-crf")
+        .arg(&format!("{}", crf))
+        .arg("-pass")
+        .arg("2")
+        .arg("-threads")
+        .arg("1")
+        .arg("-cpu-used")
+        .arg("0")
+        // AOM-AV1 specific flags start
+        .arg("-auto-alt-ref")
+        .arg("1")
+        .arg("-arnr-max-frames")
+        .arg("7")
+        .arg("-arnr-strength")
+        .arg("4")
+        .arg("-tune")
+        .arg("0")
+        .arg("-lag-in-frames")
+        .arg("35")
+        .arg("-tile-columns")
+        .arg("0")
+        .arg("-row-mt")
+        .arg("1")
+        .arg("output.webm")
+        // AOM-AV1 specific flags end
+        .output()
+        .await
+        .unwrap();
+    sender.send(JobToOverseerMessage::VideoSecondPassFinished);
+
+    "output.webm".into()
+}
+
+async fn merge_media(audio: Vec<PathBuf>, video: PathBuf, sender: UnboundedSender<JobToOverseerMessage>) -> PathBuf {
+    unimplemented!()
+}
+
+pub struct RequestForJobStatus;
+
+/// The future that is returned by `run_job`.
+async fn actually_run_job(
+    path: impl AsRef<OsStr>,
+    status_sender: UnboundedSender<JobStatus>,
+    mut request_receiver: UnboundedReceiver<RequestForJobStatus>,
+) -> PathBuf {
+    let (update_sender, mut update_receiver) = unbounded_channel();
+
+    let main_job_future = async {
+        let (audio_files, video_file) = join!(
+            convert_audio(&path, update_sender.clone()),
+            convert_video(&path, update_sender.clone()),
+        );
+
+        let merged = merge_media(audio_files, video_file, update_sender).await;
+
+        // TODO: delete temporary files
+        merged
+    };
+
+    let message_processor_future = async {
+        // TODO: to prevent DDOS attacks, use Arc<RwLock<_>>
+        let mut state = JobStatus::new();
+
+        loop {
+            select! {
+                biased;
+
+                // receive updates from our job
+                message = update_receiver.recv() => {
+                    let message = match message {
+                        Some(m) => m,
+                        None => break,
+                    };
+
+                    state.process_update(message);
+                },
+
+                // receive request for updates from caller
+                message = request_receiver.recv() => {
+                    status_sender.send(state.clone());
+                },
+            }
+        }
+    };
+
+    select! {
+        retval = main_job_future => return retval,
+        _ = message_processor_future => unreachable!(),
+    }
+}
+
+/// Runs a job and returns both the future and the receiver for its messages.
+///
+/// In order to communicate between the caller thread and this function to
+/// request and send status updates, a channel must be made for (1) request for
+/// status, and (2) the status themselves.
+///
+/// (1) For the request for status, the receiver is held by this function and
+/// the sender is sent back to the caller
+/// (2) For the status, the receiver is sent to the caller and the sender is
+/// held by this function
+pub fn run_job(path: PathBuf) -> (impl Future<Output = PathBuf>, UnboundedReceiver<JobStatus>, UnboundedSender<RequestForJobStatus>) {
+    let (status_sender, status_receiver) = unbounded_channel();
+    let (request_sender, request_receiver) = unbounded_channel();
+
+    (
+        actually_run_job(path, status_sender, request_receiver),
+        status_receiver,
+        request_sender
+    )
+}
+
+//             status            update
+//             tx/rx              tx/rx
+// main thread <---> job overseer <--- job
+//             statusrequest
+//             tx/rx
+// - main thread will be calling the creator of job overseer
+//   - the overseer will be returning the receiver of statuses
+//     - this will involve passing the receiver of requests for status to this function
+//     - or does it need to be?
+//     - how do you pass it?
 
 #[tokio::main]
 async fn main() {
-    do_job("./src/test_files/Coffee Run.webm").await;
+    //do_job("./src/test_files/Coffee Run.webm").await;
 
     /*
     let router = Router::new()
