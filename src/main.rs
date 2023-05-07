@@ -233,7 +233,7 @@ async fn convert_audio_tracks(
             .arg(&format!("0:a:{}", idx))
             // use the filter loudnorm to print the loudness constants in JSON
             .arg("-filter:a")
-            .arg("loudnorm=print_format=json")
+            .arg(&filter_graph)
             // we're not writing anything so pipe the output into /dev/null with
             // null type
             .arg("-codec:a")
