@@ -2,7 +2,10 @@ use std::{
     net::SocketAddr,
 };
 use std::ffi::OsStr;
+use std::collections::VecDeque;
 
+use serde::Deserialize;
+use serde::Deserializer;
 use tokio::process::Command;
 use std::path::Path;
 use axum::{
@@ -68,14 +71,81 @@ impl ConversionState {
 }
 */
 
-async fn do_job(path: impl AsRef<OsStr>) {
-    eprintln!("Analyzing audio...");
+#[derive(Debug, Clone)]
+struct AudioConstants {
+    input_i: f64,
+	input_tp: f64,
+	input_lra: f64,
+	input_thresh: f64,
+	//output_i:
+	//output_tp:
+	//output_lra:
+	//output_thresh:
+	//normalization_type:
+	//target_offset:
+}
 
-    // read the audio stats
+impl<'de> Deserialize<'de> for AudioConstants {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        #[derive(Deserialize)]
+        struct StringAudioConstants {
+            input_i: String,
+            input_tp: String,
+            input_lra: String,
+            input_thresh: String,
+        }
+
+        let StringAudioConstants {
+            input_i,
+            input_tp,
+            input_lra,
+            input_thresh,
+        } = StringAudioConstants::deserialize(deserializer)?;
+
+        let input_i = input_i
+            .parse::<f64>()
+            .map_err(|err| serde::de::Error::invalid_value(
+                serde::de::Unexpected::Str(&input_i),
+                &err.to_string().as_str()
+            ))?;
+
+        let input_tp = input_tp
+            .parse::<f64>()
+            .map_err(|err| serde::de::Error::invalid_value(
+                serde::de::Unexpected::Str(&input_tp),
+                &err.to_string().as_str()
+            ))?;
+
+        let input_lra = input_lra
+            .parse::<f64>()
+            .map_err(|err| serde::de::Error::invalid_value(
+                serde::de::Unexpected::Str(&input_lra),
+                &err.to_string().as_str()
+            ))?;
+
+        let input_thresh = input_thresh
+            .parse::<f64>()
+            .map_err(|err| serde::de::Error::invalid_value(
+                serde::de::Unexpected::Str(&input_thresh),
+                &err.to_string().as_str()
+            ))?;
+
+        Ok(AudioConstants {
+            input_i,
+            input_tp,
+            input_lra,
+            input_thresh,
+        })
+    }
+}
+
+/// Use FFmpeg to read the audio constants of a file
+async fn determine_audio_constants(path: impl AsRef<OsStr>) -> Option<AudioConstants> {
+    // TODO: what if there is no audio? what if there is more than one audio?
+
     let audio_stats = Command::new("ffmpeg")
         .arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("0")
         .arg("-i")
         .arg(&path)
         .arg("-vn")
@@ -89,11 +159,36 @@ async fn do_job(path: impl AsRef<OsStr>) {
         .await
         .unwrap();
 
-    let mut audio_stats = String::from_utf8(audio_stats.stderr);
-    eprintln!("{}", audio_stats.unwrap());
+    let mut line_ring = VecDeque::with_capacity(12);
+    let stderr = String::from_utf8(audio_stats.stderr).unwrap();
+    let input_lines = stderr.lines();
 
-    eprintln!("Performing first pass...");
-    
+    // get the last 12 lines
+    for line in input_lines {
+        while line_ring.capacity() <= line_ring.len() {
+            line_ring.pop_front();
+        }
+
+        line_ring.push_back(line);
+    }
+
+    // form the string
+    let mut object_string = String::new();
+    for line in line_ring.into_iter() {
+        object_string += line;
+    }
+
+    serde_json::from_str(&object_string).ok()
+}
+
+async fn do_job(path: impl AsRef<OsStr>) {
+    eprintln!("Analyzing audio...");
+    let audio_constants = determine_audio_constants(&path).await;
+    eprintln!("{:?}", audio_constants);
+
+    panic!();
+ 
+    eprintln!("Performing first pass...");   
     // generate first pass log
     let first_pass_log = Command::new("ffmpeg")
         .arg("-hide_banner")
@@ -121,12 +216,12 @@ async fn do_job(path: impl AsRef<OsStr>) {
         .arg("-hide_banner")
         .arg("-i")
         .arg(&path)
-        // OPUS related audio
+        // OPUS related options
         .arg("-codec:a")
         .arg("libopus")
         .arg("-compression_level")
         .arg("10")
-        // General Video Options
+        // General video options
         .arg("-codec:v")
         .arg("libaom-av1")
         .arg("-crf")

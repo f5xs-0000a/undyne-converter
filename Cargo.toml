@@ -11,8 +11,8 @@ axum = { version = "0.6", features = ["multipart"] }
 #clap = { version = "*", features = ["derive"] }
 futures = "0.3"
 #rand = "*"
-#serde = { version = "*", features = ["derive"] }
-#serde_json = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
 #serde_urlencoded = "*"
 tokio = { version = "1.27", features = ["macros", "rt-multi-thread", "io-util", "fs", "process"] }
 #tokio-util = { version = "*", features = ["io", "codec"] }
