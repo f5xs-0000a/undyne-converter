@@ -167,7 +167,7 @@ async fn determine_audio_constants(
             .unwrap();
 
         let mut line_ring = VecDeque::with_capacity(12);
-        let stderr = dbg!(String::from_utf8(audio_stats.stderr).unwrap());
+        let stderr = String::from_utf8(audio_stats.stderr).unwrap();
         let input_lines = stderr.lines();
 
         // get the last 12 lines
@@ -204,7 +204,6 @@ async fn convert_audio(
     let mut converted_audio_paths = vec![];
 
     for (idx, constant) in constants.iter().enumerate() {
-        dbg!(());
         let filter_graph = format!(
             "loudnorm=linear=true:i={}:measured_I={}:measured_LRA={}:\
              measured_tp={}:measured_thresh={}",
@@ -249,14 +248,55 @@ async fn convert_audio(
     converted_audio_paths
 }
 
+fn crf(width: usize, height: usize) -> usize {
+    let width = width as f64;
+    let height = height as f64;
+    ((-0.0084 * (width * height).sqrt() + 40.22287) as isize).min(63).max(0) as usize
+}
+
+async fn determine_video_dimensions(path: impl AsRef<OsStr>) -> Option<(usize, usize)> {
+    let command = Command::new("ffprobe")
+        .arg("-hide_banner")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v")
+        .arg("-show_entries")
+        .arg("stream=width,height")
+        .arg("-print_format")
+        .arg("json")
+        .arg(path)
+        .output()
+        .await
+        .unwrap();
+
+    #[derive(Deserialize)]
+    struct Dimensions {
+        width: usize,
+        height: usize,
+    }
+
+    #[derive(Deserialize)]
+    struct Entries {
+        // programs:
+        streams: Vec<Dimensions>,
+    }
+
+    let dimensions = String::from_utf8(command.stdout).unwrap();
+    serde_json::from_str::<Entries>(&dimensions).ok().and_then(|e| e.streams.into_iter().next()).map(|dim| (dim.width, dim.height))
+}
+
 async fn do_job(path: impl AsRef<OsStr>) {
     eprintln!("Analyzing audio...");
     let audio_constants = determine_audio_constants(&path).await;
     eprintln!("{:?}", audio_constants);
 
-    let converted_audios = convert_audio(audio_constants, path, -18.).await;
+    let converted_audios = convert_audio(audio_constants, &path, -18.).await;
 
-    panic!();
+    let first_pass_log = "./ffmpeg2pass-0.log";
+
+    let (width, height) = determine_video_dimensions(&path).await.unwrap();
+    let crf = crf(width, height);
 
     eprintln!("Performing first pass...");
     // generate first pass log
@@ -269,7 +309,8 @@ async fn do_job(path: impl AsRef<OsStr>) {
         .arg("-an")
         .arg("-pass")
         .arg("1")
-        // TODO: use the -passlogfile argument
+        .arg("-passlogfile")
+        .arg(&first_pass_log)
         .arg("-f")
         .arg("null")
         .arg("/dev/null")
@@ -277,20 +318,11 @@ async fn do_job(path: impl AsRef<OsStr>) {
         .await
         .unwrap();
 
-    let first_pass_log = "./ffmpeg2pass-0.log";
-
-    let crf = 35; // TODO: unimplemented
-
     eprintln!("Starting conversion...");
     let conversion = Command::new("ffmpeg")
         .arg("-hide_banner")
         .arg("-i")
         .arg(&path)
-        // OPUS related options
-        .arg("-codec:a")
-        .arg("libopus")
-        .arg("-compression_level")
-        .arg("10")
         // General video options
         .arg("-codec:v")
         .arg("libaom-av1")
@@ -322,6 +354,12 @@ async fn do_job(path: impl AsRef<OsStr>) {
         .output()
         .await
         .unwrap();
+
+    // OPUS related options
+    //.arg("-codec:a")
+    //.arg("libopus")
+    //.arg("-compression_level")
+    //.arg("10")
 
     let mut conversion = String::from_utf8(conversion.stderr);
     eprintln!("{}", conversion.unwrap());
