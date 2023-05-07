@@ -1,20 +1,16 @@
 use std::{
+    collections::VecDeque,
+    ffi::OsStr,
     net::SocketAddr,
+    path::{
+        Path,
+        PathBuf,
+    },
 };
-use std::ffi::OsStr;
-use std::collections::VecDeque;
 
-use serde::Deserialize;
-use serde::Deserializer;
-use tokio::process::Command;
-use std::path::Path;
 use axum::{
-    body::{
-        boxed,
-    },
-    extract::{
-        Multipart,
-    },
+    body::boxed,
+    extract::Multipart,
     http::StatusCode,
     response::Response,
     routing::{
@@ -23,16 +19,15 @@ use axum::{
     },
     Router,
 };
-use futures::{
-    TryStreamExt,
+use futures::TryStreamExt;
+use serde::{
+    Deserialize,
+    Deserializer,
 };
 use tokio::{
-    fs::{
-        OpenOptions,
-    },
-    io::{
-        AsyncWriteExt,
-    },
+    fs::OpenOptions,
+    io::AsyncWriteExt,
+    process::Command,
 };
 
 // we're getting ahead of ourselves in here.
@@ -74,20 +69,22 @@ impl ConversionState {
 #[derive(Debug, Clone)]
 struct AudioConstants {
     input_i: f64,
-	input_tp: f64,
-	input_lra: f64,
-	input_thresh: f64,
-	//output_i:
-	//output_tp:
-	//output_lra:
-	//output_thresh:
-	//normalization_type:
-	//target_offset:
+    input_tp: f64,
+    input_lra: f64,
+    input_thresh: f64,
+    //output_i:
+    //output_tp:
+    //output_lra:
+    //output_thresh:
+    //normalization_type:
+    //target_offset:
 }
 
 impl<'de> Deserialize<'de> for AudioConstants {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: Deserializer<'de> {
+    where
+        D: Deserializer<'de>,
+    {
         #[derive(Deserialize)]
         struct StringAudioConstants {
             input_i: String,
@@ -103,33 +100,33 @@ impl<'de> Deserialize<'de> for AudioConstants {
             input_thresh,
         } = StringAudioConstants::deserialize(deserializer)?;
 
-        let input_i = input_i
-            .parse::<f64>()
-            .map_err(|err| serde::de::Error::invalid_value(
+        let input_i = input_i.parse::<f64>().map_err(|err| {
+            serde::de::Error::invalid_value(
                 serde::de::Unexpected::Str(&input_i),
-                &err.to_string().as_str()
-            ))?;
+                &err.to_string().as_str(),
+            )
+        })?;
 
-        let input_tp = input_tp
-            .parse::<f64>()
-            .map_err(|err| serde::de::Error::invalid_value(
+        let input_tp = input_tp.parse::<f64>().map_err(|err| {
+            serde::de::Error::invalid_value(
                 serde::de::Unexpected::Str(&input_tp),
-                &err.to_string().as_str()
-            ))?;
+                &err.to_string().as_str(),
+            )
+        })?;
 
-        let input_lra = input_lra
-            .parse::<f64>()
-            .map_err(|err| serde::de::Error::invalid_value(
+        let input_lra = input_lra.parse::<f64>().map_err(|err| {
+            serde::de::Error::invalid_value(
                 serde::de::Unexpected::Str(&input_lra),
-                &err.to_string().as_str()
-            ))?;
+                &err.to_string().as_str(),
+            )
+        })?;
 
-        let input_thresh = input_thresh
-            .parse::<f64>()
-            .map_err(|err| serde::de::Error::invalid_value(
+        let input_thresh = input_thresh.parse::<f64>().map_err(|err| {
+            serde::de::Error::invalid_value(
                 serde::de::Unexpected::Str(&input_thresh),
-                &err.to_string().as_str()
-            ))?;
+                &err.to_string().as_str(),
+            )
+        })?;
 
         Ok(AudioConstants {
             input_i,
@@ -141,44 +138,115 @@ impl<'de> Deserialize<'de> for AudioConstants {
 }
 
 /// Use FFmpeg to read the audio constants of a file
-async fn determine_audio_constants(path: impl AsRef<OsStr>) -> Option<AudioConstants> {
-    // TODO: what if there is no audio? what if there is more than one audio?
+async fn determine_audio_constants(
+    path: impl AsRef<OsStr>
+) -> Vec<AudioConstants> {
+    let mut constants = vec![];
 
-    let audio_stats = Command::new("ffmpeg")
-        .arg("-hide_banner")
-        .arg("-i")
-        .arg(&path)
-        .arg("-vn")
-        .arg("-filter:a")
-        .arg("loudnorm=print_format=json")
-        .arg("-f")
-        .arg("null")
-        .arg("/dev/null")
-        .kill_on_drop(true)
-        .output()
-        .await
-        .unwrap();
+    for channel_no in 0 .. {
+        let audio_stats = Command::new("ffmpeg")
+            .arg("-hide_banner")
+            // read this specific file
+            .arg("-i")
+            .arg(&path)
+            // ignore the video portion
+            .arg("-vn")
+            .arg("-map")
+            .arg(&format!("0:a:{}", channel_no))
+            // use the filter loudnorm to print the loudness constants in JSON
+            .arg("-filter:a")
+            .arg("loudnorm=print_format=json")
+            // we're not writing anything so pipe the output into /dev/null with
+            // null type
+            .arg("-f")
+            .arg("null")
+            .arg("/dev/null")
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
 
-    let mut line_ring = VecDeque::with_capacity(12);
-    let stderr = String::from_utf8(audio_stats.stderr).unwrap();
-    let input_lines = stderr.lines();
+        let mut line_ring = VecDeque::with_capacity(12);
+        let stderr = dbg!(String::from_utf8(audio_stats.stderr).unwrap());
+        let input_lines = stderr.lines();
 
-    // get the last 12 lines
-    for line in input_lines {
-        while line_ring.capacity() <= line_ring.len() {
-            line_ring.pop_front();
+        // get the last 12 lines
+        for line in input_lines {
+            while line_ring.capacity() <= line_ring.len() {
+                line_ring.pop_front();
+            }
+
+            line_ring.push_back(line);
         }
 
-        line_ring.push_back(line);
+        // form the string
+        let mut object_string = String::new();
+        for line in line_ring.into_iter() {
+            object_string += line;
+        }
+
+        if let Ok(consts) = serde_json::from_str(&object_string) {
+            constants.push(consts);
+        }
+        else {
+            break;
+        }
     }
 
-    // form the string
-    let mut object_string = String::new();
-    for line in line_ring.into_iter() {
-        object_string += line;
+    constants
+}
+
+async fn convert_audio(
+    constants: Vec<AudioConstants>,
+    input_path: impl AsRef<OsStr>,
+    target_i: f64,
+) -> Vec<PathBuf> {
+    let mut converted_audio_paths = vec![];
+
+    for (idx, constant) in constants.iter().enumerate() {
+        dbg!(());
+        let filter_graph = format!(
+            "loudnorm=linear=true:i={}:measured_I={}:measured_LRA={}:\
+             measured_tp={}:measured_thresh={}",
+            target_i,
+            constant.input_i,
+            constant.input_lra,
+            constant.input_tp,
+            constant.input_thresh
+        );
+
+        let path = format!("./audio_{}.opus", idx);
+
+        let command = Command::new("ffmpeg")
+            .arg("-hide_banner")
+            .arg("-y")
+            .arg("-i")
+            .arg(&input_path)
+            .arg("-vn")
+            .arg("-map")
+            .arg(&format!("0:a:{}", idx))
+            // use the filter loudnorm to print the loudness constants in JSON
+            .arg("-filter:a")
+            .arg("loudnorm=print_format=json")
+            // we're not writing anything so pipe the output into /dev/null with
+            // null type
+            .arg("-codec:a")
+            .arg("libopus")
+            .arg("-compression_level")
+            .arg("10")
+            .arg(&path)
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+
+        eprintln!("{}", String::from_utf8(command.stderr).unwrap());
+
+        eprintln!("Created {}", path);
+        converted_audio_paths.push(path.into());
     }
 
-    serde_json::from_str(&object_string).ok()
+    converted_audio_paths
 }
 
 async fn do_job(path: impl AsRef<OsStr>) {
@@ -186,9 +254,11 @@ async fn do_job(path: impl AsRef<OsStr>) {
     let audio_constants = determine_audio_constants(&path).await;
     eprintln!("{:?}", audio_constants);
 
+    let converted_audios = convert_audio(audio_constants, path, -18.).await;
+
     panic!();
- 
-    eprintln!("Performing first pass...");   
+
+    eprintln!("Performing first pass...");
     // generate first pass log
     let first_pass_log = Command::new("ffmpeg")
         .arg("-hide_banner")
@@ -255,7 +325,6 @@ async fn do_job(path: impl AsRef<OsStr>) {
 
     let mut conversion = String::from_utf8(conversion.stderr);
     eprintln!("{}", conversion.unwrap());
-
 }
 
 #[tokio::main]
@@ -304,7 +373,7 @@ pub async fn upload(mut multipart: Multipart) -> Result<Response, StatusCode> {
             // TODO: this should be an async block to receive a file. once a
             // file has been downloaded, a process should check the file if it
             // is a valid file
-            
+
             // one way to do this is to use two processors in a join, one to
             // process sequential downloads and the other to check if the file
             // downloaded is a valid file
