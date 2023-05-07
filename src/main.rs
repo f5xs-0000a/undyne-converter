@@ -8,6 +8,7 @@ use std::{
     },
 };
 use std::sync::Arc;
+use core::mem::drop;
 
 use tokio::join;
 use tokio::select;
@@ -36,42 +37,6 @@ use tokio::{
     io::AsyncWriteExt,
     process::Command,
 };
-
-// we're getting ahead of ourselves in here.
-/*
-type JobId = u64;
-
-enum JobPhase {
-    NoAudio,
-
-    Finished,
-}
-
-struct Job {
-    path: PathBuf,
-}
-
-impl Job {
-    pub async fn new(path: PathBuf) -> Job {
-        Command::new("ffmpeg")
-            .arg("-hide_banner")
-            .arg("-vn")
-            .arg("-i")
-            .arg(&path)
-            .arg("-f")
-            .arg("null")
-            .arg("/dev/null")
-    }
-}
-
-pub struct ConversionState {
-    in_progress: HashMap<u64, Job>,
-}
-
-impl ConversionState {
-    fn advance(&mut self)
-}
-*/
 
 #[derive(Debug, Clone)]
 pub struct AudioConstants {
@@ -293,87 +258,6 @@ async fn determine_video_dimensions(path: impl AsRef<OsStr>) -> Option<(usize, u
     serde_json::from_str::<Entries>(&dimensions).ok().and_then(|e| e.streams.into_iter().next()).map(|dim| (dim.width, dim.height))
 }
 
-/*
-async fn do_job(path: impl AsRef<OsStr>) {
-    eprintln!("Analyzing audio...");
-    let audio_constants = determine_audio_constants(&path).await;
-    eprintln!("{:?}", audio_constants);
-
-    let converted_audios = convert_audio(audio_constants, &path, -18.).await;
-
-    let first_pass_log = "./ffmpeg2pass-0.log";
-
-    let (width, height) = determine_video_dimensions(&path).await.unwrap();
-    let crf = crf(width, height);
-
-    eprintln!("Performing first pass...");
-    // generate first pass log
-    let first_pass_log = Command::new("ffmpeg")
-        .arg("-hide_banner")
-        .arg("-i")
-        .arg(&path)
-        .arg("-codec:v")
-        .arg("libaom-av1")
-        .arg("-an")
-        .arg("-pass")
-        .arg("1")
-        .arg("-passlogfile")
-        .arg(&first_pass_log)
-        .arg("-f")
-        .arg("null")
-        .arg("/dev/null")
-        .output()
-        .await
-        .unwrap();
-
-    eprintln!("Starting conversion...");
-    let conversion = Command::new("ffmpeg")
-        .arg("-hide_banner")
-        .arg("-i")
-        .arg(&path)
-        // General video options
-        .arg("-codec:v")
-        .arg("libaom-av1")
-        .arg("-crf")
-        .arg(&format!("{}", crf))
-        .arg("-pass")
-        .arg("2")
-        .arg("-threads")
-        .arg("1")
-        .arg("-cpu-used")
-        .arg("0")
-        // AOM-AV1 specific flags start
-        .arg("-auto-alt-ref")
-        .arg("1")
-        .arg("-arnr-max-frames")
-        .arg("7")
-        .arg("-arnr-strength")
-        .arg("4")
-        .arg("-tune")
-        .arg("0")
-        .arg("-lag-in-frames")
-        .arg("35")
-        .arg("-tile-columns")
-        .arg("0")
-        .arg("-row-mt")
-        .arg("1")
-        .arg("output.webm")
-        // AOM-AV1 specific flags end
-        .output()
-        .await
-        .unwrap();
-
-    // OPUS related options
-    //.arg("-codec:a")
-    //.arg("libopus")
-    //.arg("-compression_level")
-    //.arg("10")
-
-    let mut conversion = String::from_utf8(conversion.stderr);
-    eprintln!("{}", conversion.unwrap());
-}
-*/
-
 pub enum JobToOverseerMessage {
     // finished progresses
     //AudioFirstPassFinished,
@@ -440,20 +324,13 @@ impl JobStatus {
     }
 }
 
-/// Overseer for a job.
-///
-/// The only job the overseer has is to:
-/// 1. run the actual job
-/// 2. receive progress from the job
-/// 3. send progress feedback to main thread
-
 async fn convert_audio(path: impl AsRef<OsStr>, sender: UnboundedSender<JobToOverseerMessage>) -> Vec<PathBuf> {
     let audio_constants = determine_audio_constants(&path).await;
     let audio_constants: Arc<[AudioConstants]> = Arc::from(audio_constants);
-    sender.send(JobToOverseerMessage::AudioConstantsDetermined(audio_constants.clone()));
+    drop(sender.send(JobToOverseerMessage::AudioConstantsDetermined(audio_constants.clone())));
 
     let converted_audios = convert_audio_tracks(&*audio_constants, &path, -18.).await;
-    sender.send(JobToOverseerMessage::AudioSecondPassFinished);
+    drop(sender.send(JobToOverseerMessage::AudioSecondPassFinished));
 
     converted_audios
 }
@@ -461,14 +338,15 @@ async fn convert_audio(path: impl AsRef<OsStr>, sender: UnboundedSender<JobToOve
 async fn convert_video(path: impl AsRef<OsStr>, sender: UnboundedSender<JobToOverseerMessage>) -> PathBuf {
     let crf_determine_future = async {
         let (width, height) = determine_video_dimensions(&path).await.unwrap();
-        sender.send(JobToOverseerMessage::VideoDimensionsDetermined(width, height));
+        drop(sender.send(JobToOverseerMessage::VideoDimensionsDetermined(width, height)));
 
         let video_crf = crf(width, height);
-        sender.send(JobToOverseerMessage::VideoCrfDetermined(video_crf));
+        drop(sender.send(JobToOverseerMessage::VideoCrfDetermined(video_crf)));
 
         video_crf
     };
 
+    // TODO: temporary name
     let first_pass_log = "./ffmpeg2pass-0.log";
 
     let first_pass_future = async {
@@ -489,7 +367,7 @@ async fn convert_video(path: impl AsRef<OsStr>, sender: UnboundedSender<JobToOve
             .output()
             .await
             .unwrap();
-        sender.send(JobToOverseerMessage::VideoFirstPassFinished);
+        drop(sender.send(JobToOverseerMessage::VideoFirstPassFinished));
     };
 
     let (crf, _) = join!(
@@ -498,7 +376,9 @@ async fn convert_video(path: impl AsRef<OsStr>, sender: UnboundedSender<JobToOve
     );
 
     eprintln!("Starting conversion...");
-    let conversion = Command::new("ffmpeg")
+    // TODO: add message here that conversion video conversion has started
+    // and send the supposed log file
+    Command::new("ffmpeg")
         .arg("-hide_banner")
         .arg("-i")
         .arg(&path)
@@ -533,7 +413,7 @@ async fn convert_video(path: impl AsRef<OsStr>, sender: UnboundedSender<JobToOve
         .output()
         .await
         .unwrap();
-    sender.send(JobToOverseerMessage::VideoSecondPassFinished);
+    drop(sender.send(JobToOverseerMessage::VideoSecondPassFinished));
 
     "output.webm".into()
 }
@@ -583,8 +463,8 @@ async fn actually_run_job(
                 },
 
                 // receive request for updates from caller
-                message = request_receiver.recv() => {
-                    status_sender.send(state.clone());
+                _ = request_receiver.recv() => {
+                    drop(status_sender.send(state.clone()));
                 },
             }
         }
@@ -616,17 +496,6 @@ pub fn run_job(path: PathBuf) -> (impl Future<Output = PathBuf>, UnboundedReceiv
         request_sender
     )
 }
-
-//             status            update
-//             tx/rx              tx/rx
-// main thread <---> job overseer <--- job
-//             statusrequest
-//             tx/rx
-// - main thread will be calling the creator of job overseer
-//   - the overseer will be returning the receiver of statuses
-//     - this will involve passing the receiver of requests for status to this function
-//     - or does it need to be?
-//     - how do you pass it?
 
 #[tokio::main]
 async fn main() {
