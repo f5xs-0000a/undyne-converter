@@ -101,7 +101,10 @@ impl<'de> Deserialize<'de> for AudioConstants {
     }
 }
 
-/// Use FFmpeg to read the audio constants of a file
+/// Use FFmpeg to read the audio constants of a file.
+///
+/// The number of elements in the vec is the same as the number of audio tracks
+/// in a container.
 async fn determine_audio_constants(
     path: impl AsRef<OsStr>
 ) -> Vec<AudioConstants> {

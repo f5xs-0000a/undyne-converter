@@ -1,6 +1,10 @@
 mod converter;
+mod error_responses;
 mod overseer;
 
+use crate::error_responses::HttpErrorJson;
+
+use core::future::Future; 
 use axum::{
     body::boxed,
     extract::Multipart,
@@ -17,36 +21,40 @@ use tokio::{
     fs::OpenOptions,
     io::AsyncWriteExt,
 };
+use std::net::SocketAddr;
 
-#[tokio::main]
-async fn main() {
-    let (
-        future,
-        mut status_receiver,
-        status_request_sender
-    ) = crate::overseer::run_job("./src/test_files/Coffee Run.webm");
+/*
+type JobType = Box<dyn Future<Output = PathBuf>>;
 
-    let status_update = async {
-        loop {
-            status_request_sender.send(crate::overseer::RequestForJobStatus);
-            let status = status_receiver.recv().await;
-            eprintln!("{:?}", status);
-            tokio::time::sleep(std::time::Duration::new(5, 0)).await;
-        }
-    };
+/// Internal state of the application.
+struct AppState {
+    next_job_id: usize,
+    jobs: Arc<RwLock<HashMap<usize, Job>>>,
+}
 
-    loop {
-        tokio::select! {
-            biased;
-
-            _ = future => break,
-            _ = status_update => unimplemented!(),
+impl AppState {
+    pub fn new() -> AppState {
+        AppState {
+            next_job_id: usize,
+            jobs: HashMap<usize, Job>,
         }
     }
 
-    /*
+    async fn create_job(
+        &mut self,
+        path: impl AsRef<OsStr>
+    ) -> Job {
+    }
+}
+*/
+
+#[tokio::main]
+async fn main() {
+    let state = unimplemented!();
+
     let router = Router::new()
-        .route("/upload", on(MethodFilter::POST, upload));
+        .route("/upload", on(MethodFilter::POST, on_upload))
+        .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
 
@@ -54,33 +62,56 @@ async fn main() {
         .serve(router.into_make_service())
         .await
         .unwrap();
-    */
 }
 
-pub async fn upload(mut multipart: Multipart) -> Result<Response, StatusCode> {
-    while let Some(mut field) = match multipart.next_field().await {
-        Err(_e) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+pub async fn on_upload(mut multipart: Multipart) -> Result<Response, StatusCode>
+{
+    eprintln!("Received file upload request.");
+
+    let mut files: Vec<()> = vec![];
+
+    // for every file that exists in the field
+    let mut index = 0;
+    while let Some((mut field, index)) = match multipart.next_field().await {
+        // TODO: not everything is an internal server error
+        Err(e) => return Ok(HttpErrorJson::bad_multipart(index)),
         Ok(None) => None,
-        Ok(Some(field)) => Some(field),
+        Ok(Some(field)) => {
+            // update the file index
+            let cur_index = index;
+            index += 1;
+            Some((field, index))
+        },
     } {
+        if files.len() > 1 {
+            eprintln!("Server can't yet handle multiple media to be concatenated.");
+            return Ok(HttpErrorJson::unimplemented(Some("Cannot process multiple files for the moment.")));
+        }
+
+        // determine the filename
         let filename = match field.file_name() {
-            None => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+            None => return Ok(HttpErrorJson::bad_request(format!("No file name found for file #{}", index))),
             Some(fname) => fname.to_owned(),
         };
+
+        // create the file
         let mut file = match OpenOptions::new()
             .create(true)
             .write(true)
             .open(&filename)
             .await
         {
-            Err(_e) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-            Ok(f) => dbg!(f),
+            Err(_e) => return Ok(HttpErrorJson::internal_server_error(None)),
+            Ok(f) => f,
         };
 
+        // write the file
         {
             while let Some(bytes) = field.try_next().await.unwrap() {
+                // TODO: an appropriate error
                 file.write(&bytes).await.unwrap();
             }
+            // TODO: also an appropriate error
             file.flush().await.unwrap();
 
             // TODO: this should be an async block to receive a file. once a
@@ -92,8 +123,12 @@ pub async fn upload(mut multipart: Multipart) -> Result<Response, StatusCode> {
             // downloaded is a valid file
         }
 
-        eprintln!("written {}", filename);
+        eprintln!("Written {}", filename);
     }
+    
+    // ...to whom do you send the file?
+    // you should be able to send the file to somewhere else. a service that
+    // continually runs beside the web server
 
     Ok(Response::builder()
         .status(StatusCode::CREATED)
