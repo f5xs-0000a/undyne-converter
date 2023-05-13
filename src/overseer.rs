@@ -1,10 +1,13 @@
-use core::future::Future;
 use std::{
-    ffi::OsStr,
+    ffi::OsString,
     path::PathBuf,
     sync::Arc,
 };
 
+use futures::{
+    future::BoxFuture,
+    FutureExt as _,
+};
 use tokio::sync::mpsc::{
     unbounded_channel,
     UnboundedReceiver,
@@ -39,24 +42,42 @@ pub enum AudioVideoStatus {
     Finished,
 }
 
-/// Runs a job and returns both the future and the receiver for its messages.
-pub fn run_job(
-    path: impl AsRef<OsStr>
-) -> (
-    impl Future<Output = PathBuf>,
-    UnboundedReceiver<JobStatus>,
-    UnboundedSender<RequestForJobStatus>,
-) {
-    let (status_sender, status_receiver) = unbounded_channel();
-    let (request_sender, request_receiver) = unbounded_channel();
+pub struct Job {
+    future: BoxFuture<'static, PathBuf>,
+    status_receiver: UnboundedReceiver<JobStatus>,
+    request_sender: UnboundedSender<RequestForJobStatus>,
+    output: Option<PathBuf>,
+}
 
-    (
-        crate::converter::actually_run_job(
+impl Job {
+    pub fn new(path: OsString) -> Job {
+        let (status_sender, status_receiver) = unbounded_channel();
+        let (request_sender, request_receiver) = unbounded_channel();
+
+        let future = crate::converter::actually_run_job(
             path,
             status_sender,
             request_receiver,
-        ),
-        status_receiver,
-        request_sender,
-    )
+        )
+        .boxed();
+
+        Job {
+            future,
+            status_receiver,
+            request_sender,
+            output: None,
+        }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.output.is_some()
+    }
+
+    pub async fn run_until_finished(&mut self) {
+        if self.output.is_some() {
+            return;
+        }
+
+        self.output = Some((&mut self.future).await);
+    }
 }

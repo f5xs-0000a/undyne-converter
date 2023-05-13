@@ -1,13 +1,9 @@
 mod converter;
 mod error_responses;
+mod job_manager;
 mod overseer;
 
-use core::future::Future;
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    path::PathBuf,
-};
+use std::net::SocketAddr;
 
 use axum::{
     body::boxed,
@@ -20,104 +16,48 @@ use axum::{
     },
     Router,
 };
-use futures::{
-    future::BoxFuture,
-    TryStreamExt,
-};
+use futures::TryStreamExt;
 use tokio::{
     fs::OpenOptions,
     io::AsyncWriteExt,
-    select,
-    sync::mpsc::Receiver,
 };
 
-use crate::error_responses::HttpErrorJson;
-
-struct Job {
-    future: BoxFuture<'static, PathBuf>,
-    output: Option<PathBuf>,
-}
-
-impl Job {
-    pub fn new() -> Job {
-        unimplemented!()
-    }
-
-    pub fn is_finished(&self) -> bool {
-        self.output.is_some()
-    }
-
-    pub async fn run_until_finished(&mut self) {
-        if self.output.is_some() {
-            return;
-        }
-
-        self.output = Some((&mut self.future).await);
-    }
-}
-
-struct AppState {
-    server_requests: Receiver<()>,
-    jobs: HashMap<usize, Job>,
-}
-
-impl AppState {
-    pub fn new() -> AppState {
-        unimplemented!()
-    }
-
-    pub async fn async_loop(&mut self) {
-        let mut all_has_finished = false;
-
-        loop {
-            let joinable = self
-                .jobs
-                .iter_mut()
-                .map(|(_, v)| v)
-                .filter(|job| !job.is_finished())
-                .map(|job| job.run_until_finished());
-            let joined_check = futures::future::join_all(joinable);
-
-            select! {
-                maybe_message = self.server_requests.recv() => {
-                    let message = match maybe_message {
-                        Some(m) => m,
-                        None => break,
-                    };
-
-                    // TODO: actually read the message
-
-                    self.jobs.insert(0, Job::new());
-
-                    all_has_finished = false;
-                },
-
-                // only check all of the jobs if not all of them are finished
-                _ = joined_check, if !all_has_finished => {
-                    all_has_finished = true;
-                },
-            }
-        }
-    }
-}
+use crate::{
+    error_responses::HttpErrorJson,
+    job_manager::AppState,
+};
 
 #[tokio::main]
 async fn main() {
-    let state = unimplemented!();
+    let (mut app_state, app_state_messenger) = AppState::new();
 
     let router = Router::new()
-        .route("/upload", on(MethodFilter::POST, on_upload))
-        .with_state(state);
+        .route("/upload", on(MethodFilter::POST, on_multipart_upload))
+        .with_state(app_state_messenger);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
 
-    axum::Server::bind(&addr)
-        .serve(router.into_make_service())
-        .await
-        .unwrap();
+    // > the StateMessenger sent into the web server is just a messenger to the
+    //   actual AppState. this is held by axum.
+    // > the AppState is run as a future. aggregates jobs run and also receives
+    //   messages on which
+    //   > jobs to run
+    //   > which jobs to ask status for
+    //   > which jobs to delete
+    // > the JobWrapper is a wrapper for an actual job. this contains messenger
+    //   towards the actual job future
+
+    let web_server_future =
+        axum::Server::bind(&addr).serve(router.into_make_service());
+
+    tokio::select! {
+        web_server_end = web_server_future => { web_server_end.unwrap(); },
+        _ = app_state.async_loop() => {},
+    };
 }
 
-pub async fn on_upload(
+/// Behavior for the web server when receiving a multipart upload request.
+async fn on_multipart_upload(
     mut multipart: Multipart
 ) -> Result<Response, StatusCode> {
     eprintln!("Received file upload request.");
