@@ -1,7 +1,11 @@
+use axum::{
+    http::StatusCode,
+    response::{
+        IntoResponse as _,
+        Response,
+    },
+};
 use serde::Serialize;
-use axum::http::StatusCode;
-use axum::response::Response;
-use axum::response::IntoResponse as _;
 
 #[derive(Serialize)]
 pub struct HttpErrorJson {
@@ -10,20 +14,24 @@ pub struct HttpErrorJson {
 }
 
 impl HttpErrorJson {
-    pub fn new_response(code: StatusCode, message: String) -> Response {
+    pub fn new_response(
+        code: StatusCode,
+        message: String,
+    ) -> Response {
         let content = Self {
             code: code.as_u16(),
             message,
         };
 
-        (
-            code,
-            axum::Json(content)
-        ).into_response()
+        (code, axum::Json(content)).into_response()
     }
 
     pub fn bad_multipart(index: usize) -> Response {
-        let message = format!("Unable to read file at index {}. Please check if the file exists and try again.", index);
+        let message = format!(
+            "Unable to read file at index {}. Please check if the file exists \
+             and try again.",
+            index
+        );
         Self::new_response(StatusCode::UNPROCESSABLE_ENTITY, message)
     }
 

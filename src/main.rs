@@ -2,9 +2,13 @@ mod converter;
 mod error_responses;
 mod overseer;
 
-use crate::error_responses::HttpErrorJson;
+use core::future::Future;
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    path::PathBuf,
+};
 
-use core::future::Future; 
 use axum::{
     body::boxed,
     extract::Multipart,
@@ -16,37 +20,86 @@ use axum::{
     },
     Router,
 };
-use futures::TryStreamExt;
+use futures::{
+    future::BoxFuture,
+    TryStreamExt,
+};
 use tokio::{
     fs::OpenOptions,
     io::AsyncWriteExt,
+    select,
+    sync::mpsc::Receiver,
 };
-use std::net::SocketAddr;
 
-/*
-type JobType = Box<dyn Future<Output = PathBuf>>;
+use crate::error_responses::HttpErrorJson;
 
-/// Internal state of the application.
+struct Job {
+    future: BoxFuture<'static, PathBuf>,
+    output: Option<PathBuf>,
+}
+
+impl Job {
+    pub fn new() -> Job {
+        unimplemented!()
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.output.is_some()
+    }
+
+    pub async fn run_until_finished(&mut self) {
+        if self.output.is_some() {
+            return;
+        }
+
+        self.output = Some((&mut self.future).await);
+    }
+}
+
 struct AppState {
-    next_job_id: usize,
-    jobs: Arc<RwLock<HashMap<usize, Job>>>,
+    server_requests: Receiver<()>,
+    jobs: HashMap<usize, Job>,
 }
 
 impl AppState {
     pub fn new() -> AppState {
-        AppState {
-            next_job_id: usize,
-            jobs: HashMap<usize, Job>,
-        }
+        unimplemented!()
     }
 
-    async fn create_job(
-        &mut self,
-        path: impl AsRef<OsStr>
-    ) -> Job {
+    pub async fn async_loop(&mut self) {
+        let mut all_has_finished = false;
+
+        loop {
+            let joinable = self
+                .jobs
+                .iter_mut()
+                .map(|(_, v)| v)
+                .filter(|job| !job.is_finished())
+                .map(|job| job.run_until_finished());
+            let joined_check = futures::future::join_all(joinable);
+
+            select! {
+                maybe_message = self.server_requests.recv() => {
+                    let message = match maybe_message {
+                        Some(m) => m,
+                        None => break,
+                    };
+
+                    // TODO: actually read the message
+
+                    self.jobs.insert(0, Job::new());
+
+                    all_has_finished = false;
+                },
+
+                // only check all of the jobs if not all of them are finished
+                _ = joined_check, if !all_has_finished => {
+                    all_has_finished = true;
+                },
+            }
+        }
     }
 }
-*/
 
 #[tokio::main]
 async fn main() {
@@ -64,8 +117,9 @@ async fn main() {
         .unwrap();
 }
 
-pub async fn on_upload(mut multipart: Multipart) -> Result<Response, StatusCode>
-{
+pub async fn on_upload(
+    mut multipart: Multipart
+) -> Result<Response, StatusCode> {
     eprintln!("Received file upload request.");
 
     let mut files: Vec<()> = vec![];
@@ -84,13 +138,22 @@ pub async fn on_upload(mut multipart: Multipart) -> Result<Response, StatusCode>
         },
     } {
         if files.len() > 1 {
-            eprintln!("Server can't yet handle multiple media to be concatenated.");
-            return Ok(HttpErrorJson::unimplemented(Some("Cannot process multiple files for the moment.")));
+            eprintln!(
+                "Server can't yet handle multiple media to be concatenated."
+            );
+            return Ok(HttpErrorJson::unimplemented(Some(
+                "Cannot process multiple files for the moment.",
+            )));
         }
 
         // determine the filename
         let filename = match field.file_name() {
-            None => return Ok(HttpErrorJson::bad_request(format!("No file name found for file #{}", index))),
+            None => {
+                return Ok(HttpErrorJson::bad_request(format!(
+                    "No file name found for file #{}",
+                    index
+                )))
+            },
             Some(fname) => fname.to_owned(),
         };
 
@@ -125,7 +188,7 @@ pub async fn on_upload(mut multipart: Multipart) -> Result<Response, StatusCode>
 
         eprintln!("Written {}", filename);
     }
-    
+
     // ...to whom do you send the file?
     // you should be able to send the file to somewhere else. a service that
     // continually runs beside the web server

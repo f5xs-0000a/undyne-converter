@@ -206,7 +206,7 @@ async fn convert_audio_tracks(
             .output()
             .await
             .unwrap();
-        
+
         converted_audio_paths.push(path.into());
     }
 
@@ -406,7 +406,8 @@ impl JobStatus {
     ) {
         use JobToOverseerMessage::*;
 
-        // TODO and FIXME: fix invalid state updates
+        // TODO and FIXME: fix invalid state updates like do second passes go
+        // back to first passes?
         match update {
             AudioSecondPassFinished => self.audio = AudioVideoStatus::Finished,
             VideoFirstPassFinished => self.video = AudioVideoStatus::SecondPass,
