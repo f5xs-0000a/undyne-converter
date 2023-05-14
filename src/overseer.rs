@@ -14,9 +14,11 @@ use tokio::sync::mpsc::{
     UnboundedSender,
 };
 
-use crate::converter::{
-    AudioConstants,
-    JobStatus,
+use crate::{
+    converter::{
+        AudioConstants,
+        JobStatus,
+    },
 };
 
 pub struct RequestForJobStatus;
@@ -79,5 +81,10 @@ impl Job {
         }
 
         self.output = Some((&mut self.future).await);
+    }
+
+    pub async fn request_job_status(&mut self) -> JobStatus {
+        self.request_sender.send(RequestForJobStatus);
+        self.status_receiver.recv().await.unwrap()
     }
 }

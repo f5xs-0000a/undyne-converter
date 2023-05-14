@@ -8,7 +8,7 @@ axum = { version = "0.6", features = ["multipart"] }
 #bytes = "*"
 #clap = { version = "*", features = ["derive"] }
 futures = "0.3"
-#rand = "*"
+rand = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 #serde_urlencoded = "*"
