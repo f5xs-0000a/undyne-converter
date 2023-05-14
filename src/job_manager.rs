@@ -105,7 +105,7 @@ impl AppState {
                     Some(job) => {
                         let job_status = job.request_job_status().await;
                         drop(rsvp.send(Status(job_status)));
-                    }
+                    },
                 }
             },
 

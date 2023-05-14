@@ -3,11 +3,17 @@ mod error_responses;
 mod job_manager;
 mod overseer;
 
-use std::net::SocketAddr;
+use std::{
+    ffi::OsString,
+    net::SocketAddr,
+};
 
 use axum::{
     body::boxed,
-    extract::Multipart,
+    extract::{
+        Multipart,
+        State,
+    },
     http::StatusCode,
     response::Response,
     routing::{
@@ -24,7 +30,11 @@ use tokio::{
 
 use crate::{
     error_responses::HttpErrorJson,
-    job_manager::AppState,
+    job_manager::{
+        AppState,
+        AppStateMessenger,
+        MessageFromServerToApp,
+    },
 };
 
 #[tokio::main]
@@ -58,11 +68,12 @@ async fn main() {
 
 /// Behavior for the web server when receiving a multipart upload request.
 async fn on_multipart_upload(
-    mut multipart: Multipart
+    state: State<AppStateMessenger>,
+    mut multipart: Multipart,
 ) -> Result<Response, StatusCode> {
     eprintln!("Received file upload request.");
 
-    let mut files: Vec<()> = vec![];
+    let mut files: Vec<OsString> = vec![];
 
     // for every file that exists in the field
     let mut index = 0;
@@ -127,7 +138,15 @@ async fn on_multipart_upload(
         }
 
         eprintln!("Written {}", filename);
+
+        files.push(filename.into());
     }
+
+    // TODO: soon, you'll be able to take more files
+    let file = files.into_iter().next().unwrap();
+    state
+        .0
+        .send_message_expecting_response(MessageFromServerToApp::NewJob(file));
 
     // ...to whom do you send the file?
     // you should be able to send the file to somewhere else. a service that

@@ -14,11 +14,9 @@ use tokio::sync::mpsc::{
     UnboundedSender,
 };
 
-use crate::{
-    converter::{
-        AudioConstants,
-        JobStatus,
-    },
+use crate::converter::{
+    AudioConstants,
+    JobStatus,
 };
 
 pub struct RequestForJobStatus;
