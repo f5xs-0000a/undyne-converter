@@ -33,6 +33,8 @@ pub enum JobToOverseerMessage {
     VideoCrfDetermined(usize),
 
     VideoSecondPassProgress(PathBuf),
+
+    VideoConversionFinished,
 }
 
 #[derive(Debug, Copy, Clone)]

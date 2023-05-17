@@ -164,11 +164,14 @@ async fn determine_audio_constants(
 }
 
 /// Use FFmpeg to convert audio tracks into Opus, given a target I.
+///
+/// TODO: Return Vec<PathBuf> instead, each PathBuf a path to a converted
+/// audio channel.
 async fn convert_audio_tracks(
     constants: &[AudioConstants],
     input_path: impl AsRef<OsStr>,
     target_i: f64,
-) -> Vec<PathBuf> {
+) -> PathBuf {
     let mut converted_audio_paths = vec![];
 
     for (idx, constant) in constants.iter().enumerate() {
@@ -210,13 +213,17 @@ async fn convert_audio_tracks(
         converted_audio_paths.push(path.into());
     }
 
-    converted_audio_paths
+    // TODO: actually return a list of audio files
+    //converted_audio_paths
+    converted_audio_paths.into_iter().next().unwrap()
 }
 
+// TODO: Return Vec<PathBuf> instead, each PathBuf a path to a converted
+// audio channel.
 async fn convert_audio(
     path: impl AsRef<OsStr>,
     sender: UnboundedSender<JobToOverseerMessage>,
-) -> Vec<PathBuf> {
+) -> PathBuf {
     let audio_constants = determine_audio_constants(&path).await;
     let audio_constants: Arc<[AudioConstants]> = Arc::from(audio_constants);
     drop(sender.send(JobToOverseerMessage::AudioConstantsDetermined(
@@ -232,12 +239,18 @@ async fn convert_audio(
 
 //////// Video Section /////////////////////////////////////////////////////////
 
+/// Determines the optimal CRF given the video's dimensions.
+///
+/// These values are interpolated from Google's
+/// [Recommended Settings for VOD](https://developers.google.com/media/vp9/settings/vod)
+/// page.
 fn crf(
     width: usize,
     height: usize,
 ) -> usize {
     let width = width as f64;
     let height = height as f64;
+
     ((-0.0084 * (width * height).sqrt() + 40.22287) as isize)
         .min(63)
         .max(0) as usize
@@ -367,11 +380,24 @@ async fn convert_video(
 //////// Common Area ///////////////////////////////////////////////////////////
 
 async fn merge_media(
-    audio: Vec<PathBuf>,
+    audio: PathBuf,
     video: PathBuf,
     sender: UnboundedSender<JobToOverseerMessage>,
 ) -> PathBuf {
-    unimplemented!()
+    let output = "output.webm".into();
+
+    let command = Command::new("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-i")
+        .arg(&audio)
+        .arg("-i")
+        .arg(&video)
+        .arg("-c")
+        .arg("copy")
+        .arg(&output);
+    sender.send(JobToOverseerMessage::VideoConversionFinished);
+
+    output
 }
 
 #[derive(Debug, Clone)]
@@ -424,6 +450,8 @@ impl JobStatus {
             VideoSecondPassProgress(path) => {
                 self.video_conversion_log_path = Some(path)
             },
+
+            _ => {},
         }
     }
 }
