@@ -15,6 +15,7 @@ use axum::{
         State,
     },
     http::StatusCode,
+    http::Uri,
     response::Response,
     routing::{
         on,
@@ -69,6 +70,7 @@ async fn main() {
 /// Behavior for the web server when receiving a multipart upload request.
 async fn on_multipart_upload(
     state: State<AppStateMessenger>,
+    uri: Uri,
     mut multipart: Multipart,
 ) -> Result<Response, StatusCode> {
     eprintln!("Received file upload request.");
