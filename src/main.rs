@@ -2,6 +2,7 @@ mod converter;
 mod error_responses;
 mod job_manager;
 mod overseer;
+mod query_string;
 
 use std::{
     ffi::OsString,
@@ -14,8 +15,10 @@ use axum::{
         Multipart,
         State,
     },
-    http::StatusCode,
-    http::Uri,
+    http::{
+        StatusCode,
+        Uri,
+    },
     response::Response,
     routing::{
         on,
@@ -61,6 +64,8 @@ async fn main() {
     let web_server_future =
         axum::Server::bind(&addr).serve(router.into_make_service());
 
+    eprintln!("Now running at {}", addr);
+
     tokio::select! {
         web_server_end = web_server_future => { web_server_end.unwrap(); },
         _ = app_state.async_loop() => {},
@@ -72,16 +77,30 @@ async fn on_multipart_upload(
     state: State<AppStateMessenger>,
     uri: Uri,
     mut multipart: Multipart,
-) -> Result<Response, StatusCode> {
+) -> Response {
     eprintln!("Received file upload request.");
 
     let mut files: Vec<OsString> = vec![];
 
+    dbg!(());
+
+    let qsc = match query_string::get_requests(uri.query().unwrap_or("")) {
+        Ok(qsc) => qsc,
+        Err(e) => return HttpErrorJson::bad_request(e.as_error_msg()),
+    };
+
+    dbg!(qsc);
+
+    // TODO: delete me
+    return Response::builder()
+        .status(StatusCode::CREATED)
+        .body(boxed("Ok".to_owned()))
+        .unwrap();
+
     // for every file that exists in the field
     let mut index = 0;
     while let Some((mut field, index)) = match multipart.next_field().await {
-        // TODO: not everything is an internal server error
-        Err(e) => return Ok(HttpErrorJson::bad_multipart(index)),
+        Err(e) => return HttpErrorJson::bad_multipart(index),
         Ok(None) => None,
         Ok(Some(field)) => {
             // update the file index
@@ -94,18 +113,18 @@ async fn on_multipart_upload(
             eprintln!(
                 "Server can't yet handle multiple media to be concatenated."
             );
-            return Ok(HttpErrorJson::unimplemented(Some(
+            return HttpErrorJson::unimplemented(Some(
                 "Cannot process multiple files for the moment.",
-            )));
+            ));
         }
 
         // determine the filename
         let filename = match field.file_name() {
             None => {
-                return Ok(HttpErrorJson::bad_request(format!(
+                return HttpErrorJson::bad_request(format!(
                     "No file name found for file #{}",
                     index
-                )))
+                ))
             },
             Some(fname) => fname.to_owned(),
         };
@@ -117,7 +136,7 @@ async fn on_multipart_upload(
             .open(&filename)
             .await
         {
-            Err(_e) => return Ok(HttpErrorJson::internal_server_error(None)),
+            Err(_e) => return HttpErrorJson::internal_server_error(None),
             Ok(f) => f,
         };
 
@@ -150,12 +169,8 @@ async fn on_multipart_upload(
         .0
         .send_message_expecting_response(MessageFromServerToApp::NewJob(file));
 
-    // ...to whom do you send the file?
-    // you should be able to send the file to somewhere else. a service that
-    // continually runs beside the web server
-
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::CREATED)
         .body(boxed("Ok".to_owned()))
-        .unwrap())
+        .unwrap()
 }
